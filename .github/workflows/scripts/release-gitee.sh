@@ -53,7 +53,7 @@ api_delete() {
         "${API_BASE}${endpoint}?access_token=${GITEE_TOKEN}"
 }
 
-# ==================== 文件上传函数（保留原有逻辑）====================
+# ==================== 文件上传函数 ====================
 upload_file_to_release() {
     local file="$1"
     local release_id="$2"
@@ -61,13 +61,11 @@ upload_file_to_release() {
     
     log_info "上传: $filename ($(du -h "$file" | cut -f1))"
     
-    # 使用 Gitee 的上传接口
     local upload_response=$(curl -s -X POST \
         "$API_BASE/repos/$REPO_PATH/releases/$release_id/attach_files" \
         -F "access_token=$GITEE_TOKEN" \
         -F "file=@$file")
     
-    # 检查上传结果
     if echo "$upload_response" | jq -e '.browser_download_url' > /dev/null 2>&1; then
         log_success "上传成功"
         return 0
@@ -91,6 +89,13 @@ check_token() {
     if [ -z "$USERNAME" ] || [ -z "$REPO_NAME" ]; then
         log_error "USERNAME 或 REPO_NAME 未设置"
         exit 1
+    fi
+    
+    # 检查 Git 是否可用
+    if ! command -v git &> /dev/null; then
+        log_error "未找到 git 命令，无法删除标签"
+        log_warning "将跳过标签清理步骤"
+        SKIP_TAG_CLEANUP=true
     fi
     
     log_success "Token 已配置"
@@ -169,53 +174,81 @@ ensure_branch() {
 
 cleanup_old_tags() {
     echo ""
-    log_info "步骤 3/5: 清理旧标签（调试模式）"
+    log_info "步骤 3/5: 清理旧标签和 Release"
     
-    local tags_response=$(api_get "/repos/${REPO_PATH}/tags")
-    local tags=$(echo "$tags_response" | jq -r '.[].name' 2>/dev/null | head -1)  # 只测试第一个
-    
-    if [ -z "$tags" ]; then
-        log_info "没有标签可测试"
+    # 如果没有 Git，跳过
+    if [ "$SKIP_TAG_CLEANUP" = "true" ]; then
+        log_warning "跳过标签清理（需要 git 命令）"
         return 0
     fi
     
-    local tag="$tags"
-    [ "$tag" = "$TAG_NAME" ] && return 0
+    local deleted_count=0
+    local git_url="https://oauth2:${GITEE_TOKEN}@gitee.com/${REPO_PATH}.git"
     
-    log_warning "测试删除标签: $tag"
+    # 获取所有标签
+    log_debug "获取标签列表..."
+    local tags_response=$(api_get "/repos/${REPO_PATH}/tags")
     
-    # 尝试多种 API 路径
-    local methods=(
-        "/repos/${REPO_PATH}/git/refs/tags/${tag}"
-        "/repos/${REPO_PATH}/tags/${tag}" 
-        "/repos/${REPO_PATH}/releases/tags/${tag}"
-        "/repos/${REPO_PATH}/git/tags/${tag}"
-    )
+    if ! echo "$tags_response" | jq -e '.[0]' > /dev/null 2>&1; then
+        log_info "没有旧标签"
+        return 0
+    fi
     
-    for method in "${methods[@]}"; do
-        log_debug "尝试: DELETE $method"
+    local tags=$(echo "$tags_response" | jq -r '.[].name' 2>/dev/null)
+    
+    if [ -z "$tags" ]; then
+        log_info "没有旧标签"
+        return 0
+    fi
+    
+    # 遍历删除
+    while IFS= read -r tag; do
+        [ -z "$tag" ] || [ "$tag" = "$TAG_NAME" ] && continue
         
-        local response=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X DELETE \
-            "${API_BASE}${method}?access_token=${GITEE_TOKEN}")
-        
-        local http_code=$(echo "$response" | grep "HTTP_CODE:" | cut -d: -f2)
-        local body=$(echo "$response" | sed '/HTTP_CODE:/d')
-        
-        log_debug "  HTTP $http_code"
-        
-        if [ -n "$body" ]; then
-            log_debug "  响应: $(echo "$body" | jq -c '.' 2>/dev/null || echo "$body")"
+        # 只删除版本号格式的标签
+        if ! echo "$tag" | grep -qE '^(v[0-9]|[0-9])'; then
+            continue
         fi
         
-        if [ "$http_code" -eq 204 ] || [ "$http_code" -eq 200 ]; then
-            log_success "  ✓ 成功！使用此 API: $method"
-            return 0
+        echo ""
+        log_warning "清理: $tag"
+        
+        # 1. 删除 Release
+        local release=$(api_get "/repos/${REPO_PATH}/releases/tags/${tag}")
+        local release_id=$(echo "$release" | jq -r '.id // empty')
+        
+        if [ -n "$release_id" ] && [ "$release_id" != "null" ]; then
+            log_debug "  删除 Release (ID: $release_id)..."
+            api_delete "/repos/${REPO_PATH}/releases/${release_id}" >/dev/null 2>&1
+            sleep 1
+        fi
+        
+        # 2. 使用 Git Push 删除标签
+        log_debug "  删除 Git 标签..."
+        
+        local output=$(git push "$git_url" ":refs/tags/${tag}" 2>&1 | sed "s/${GITEE_TOKEN}/***TOKEN***/g")
+        
+        if [ $? -eq 0 ]; then
+            log_success "  ✓ 已删除"
+            deleted_count=$((deleted_count + 1))
+        else
+            if echo "$output" | grep -qiE "not found|does not exist|couldn't find"; then
+                log_debug "  ✓ 不存在（已删除）"
+            else
+                log_error "  ✗ 删除失败"
+                log_debug "  $(echo "$output" | head -1)"
+            fi
         fi
         
         sleep 1
-    done
+    done <<< "$tags"
     
-    log_error "所有方法都失败了"
+    echo ""
+    if [ $deleted_count -gt 0 ]; then
+        log_success "已清理 $deleted_count 个旧版本"
+    else
+        log_info "没有需要清理的版本"
+    fi
 }
 
 create_release() {
