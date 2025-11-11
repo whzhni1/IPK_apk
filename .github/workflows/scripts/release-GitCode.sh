@@ -68,7 +68,6 @@ api_post() {
     
     if [ "$http_code" -ge 400 ]; then
         log_debug "POST $endpoint - HTTP $http_code"
-        log_debug "Request: ${data:0:200}"
         log_debug "Response: ${body:0:200}"
         echo "$body"
         return 1
@@ -85,10 +84,8 @@ api_delete() {
     http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$d')
     
-    log_debug "DELETE $endpoint - HTTP $http_code"
-    
-    # 204 或 200 都算成功
-    if [ "$http_code" -eq 204 ] || [ "$http_code" -eq 200 ]; then
+    # 204, 200, 或 404 都算成功（404表示已经不存在）
+    if [ "$http_code" -eq 204 ] || [ "$http_code" -eq 200 ] || [ "$http_code" -eq 404 ]; then
         return 0
     else
         log_debug "Response: ${body:0:200}"
@@ -164,14 +161,11 @@ ensure_branch() {
     git config user.name "GitCode Bot"
     git config user.email "bot@gitcode.com"
     
-    # 确保有文件
     if [ ! -f "README.md" ]; then
         cat > README.md <<EOF
 # ${REPO_NAME}
 
 ${REPO_DESC}
-
-## 自动创建
 
 创建时间: $(date '+%Y-%m-%d %H:%M:%S')
 EOF
@@ -181,19 +175,12 @@ EOF
         cat > .gitignore <<EOF
 .DS_Store
 *.log
-node_modules/
 EOF
     fi
     
     git add -A
+    git diff --cached --quiet && git commit --allow-empty -m "Initial commit" || git commit -m "Initial commit"
     
-    if git diff --cached --quiet; then
-        git commit --allow-empty -m "Initial commit"
-    else
-        git commit -m "Initial commit"
-    fi
-    
-    # 设置远程仓库
     local git_url="https://oauth2:${GITCODE_TOKEN}@gitcode.com/${REPO_PATH}.git"
     
     if git remote get-url gitcode &>/dev/null; then
@@ -204,7 +191,6 @@ EOF
     
     log_info "推送到远程仓库..."
     
-    # 推送并正确处理错误
     push_output=$(git push gitcode HEAD:refs/heads/${BRANCH} 2>&1 | sed "s/${GITCODE_TOKEN}/***TOKEN***/g") || {
         log_error "分支推送失败"
         echo "$push_output"
@@ -224,7 +210,7 @@ cleanup_old_tags() {
         return 0
     fi
     
-    tags=$(echo "$response" | grep -o '"name":"[^"]*"' | cut -d'"' -f4)
+    tags=$(echo "$response" | grep -o '"name":"[^"]*"' | cut -d'"' -f4 | grep -v "^$")
     
     if [ -z "$tags" ]; then
         log_info "没有现有标签"
@@ -239,25 +225,18 @@ cleanup_old_tags() {
         
         log_warning "删除标签: $tag"
         
-        # 删除 release（使用 tag）
-        if api_delete "/repos/${REPO_PATH}/releases/${tag}"; then
-            log_debug "Release 删除成功"
-        else
-            log_debug "Release 不存在或删除失败（可忽略）"
-        fi
-        
-        # 删除标签
+        # GitCode API v5 删除标签即可（会自动删除关联的 Release）
         if api_delete "/repos/${REPO_PATH}/tags/${tag}"; then
-            log_success "标签删除成功: $tag"
+            log_success "删除成功"
+            deleted=$((deleted + 1))
         else
-            log_warning "标签删除失败: $tag"
+            log_warning "删除失败（可能已不存在）"
         fi
         
-        deleted=$((deleted + 1))
         sleep 1
     done <<< "$tags"
     
-    [ $deleted -gt 0 ] && log_info "已处理 ${deleted} 个旧标签" || log_info "无需删除"
+    [ $deleted -gt 0 ] && log_info "已删除 ${deleted} 个旧标签" || log_info "无需删除"
 }
 
 create_release() {
@@ -266,7 +245,6 @@ create_release() {
     log_info "标签: ${TAG_NAME}"
     log_info "标题: ${RELEASE_TITLE}"
     
-    # 转义特殊字符
     body_escaped=$(echo "$RELEASE_BODY" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g')
     
     if ! response=$(api_post "/repos/${REPO_PATH}/releases" "{
@@ -279,26 +257,11 @@ create_release() {
         exit 1
     fi
     
-    # 尝试用 jq 或 python 解析 JSON
-    if command -v jq &> /dev/null; then
-        RELEASE_ID=$(echo "$response" | jq -r '.id // empty')
-    elif command -v python3 &> /dev/null; then
-        RELEASE_ID=$(echo "$response" | python3 -c "import sys, json; print(json.load(sys.stdin).get('id', ''))" 2>/dev/null || echo "")
-    else
-        RELEASE_ID=$(echo "$response" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
-    fi
-    
-    # 检查是否创建成功
     if echo "$response" | grep -q "\"tag_name\":\"${TAG_NAME}\""; then
         log_success "Release 创建成功"
-        if [ -n "$RELEASE_ID" ]; then
-            log_info "Release ID: ${RELEASE_ID}"
-        else
-            log_warning "未能提取 Release ID"
-            log_debug "响应内容: ${response:0:500}"
-        fi
+        log_info "GitCode API v5 使用 tag_name 作为标识符"
     else
-        log_error "Release 创建失败，响应异常"
+        log_error "Release 创建失败"
         exit 1
     fi
 }
@@ -310,30 +273,6 @@ upload_files() {
     if [ -z "$UPLOAD_FILES" ]; then
         log_info "没有文件需要上传"
         return 0
-    fi
-    
-    # 必须有 RELEASE_ID
-    if [ -z "$RELEASE_ID" ]; then
-        log_error "无法上传：未获取到 Release ID"
-        log_info "尝试重新获取 Release 信息..."
-        
-        rel_response=$(api_get "/repos/${REPO_PATH}/releases/tags/${TAG_NAME}")
-        
-        if command -v jq &> /dev/null; then
-            RELEASE_ID=$(echo "$rel_response" | jq -r '.id // empty')
-        elif command -v python3 &> /dev/null; then
-            RELEASE_ID=$(echo "$rel_response" | python3 -c "import sys, json; print(json.load(sys.stdin).get('id', ''))" 2>/dev/null || echo "")
-        else
-            RELEASE_ID=$(echo "$rel_response" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
-        fi
-        
-        if [ -z "$RELEASE_ID" ]; then
-            log_error "仍然无法获取 Release ID，跳过文件上传"
-            log_debug "响应: ${rel_response:0:500}"
-            return 1
-        else
-            log_success "获取到 Release ID: ${RELEASE_ID}"
-        fi
     fi
     
     uploaded=0
@@ -355,10 +294,10 @@ upload_files() {
         filename=$(basename "$file")
         log_info "[$(( uploaded + failed + 1 ))/${total}] $filename ($size)"
         
-        # 上传文件
-        url="${API_BASE}/repos/${REPO_PATH}/releases/${RELEASE_ID}/attach_files?access_token=${GITCODE_TOKEN}"
+        # GitCode API v5 使用 tag_name 上传文件
+        url="${API_BASE}/repos/${REPO_PATH}/releases/${TAG_NAME}/attach_files?access_token=${GITCODE_TOKEN}"
         
-        log_debug "上传 URL: /repos/${REPO_PATH}/releases/${RELEASE_ID}/attach_files"
+        log_debug "上传到: /repos/${REPO_PATH}/releases/${TAG_NAME}/attach_files"
         
         response=$(curl -s -w "\n%{http_code}" -X POST \
             -F "file=@${file}" \
@@ -370,14 +309,8 @@ upload_files() {
         log_debug "HTTP Code: $http_code"
         
         if [ "$http_code" -eq 201 ] || [ "$http_code" -eq 200 ]; then
-            if echo "$body" | grep -q '"name"'; then
-                log_success "上传成功"
-                uploaded=$((uploaded + 1))
-            else
-                log_warning "上传可能成功但响应异常"
-                log_debug "响应: ${body:0:200}"
-                uploaded=$((uploaded + 1))
-            fi
+            log_success "上传成功"
+            uploaded=$((uploaded + 1))
         else
             log_error "上传失败"
             log_debug "响应: ${body:0:300}"
@@ -395,7 +328,7 @@ verify_release() {
     if response=$(api_get "/repos/${REPO_PATH}/releases/tags/${TAG_NAME}"); then
         log_success "验证成功"
         log_info "标签: ${TAG_NAME}"
-        log_info "访问地址: https://gitcode.com/${REPO_PATH}/releases/tag/${TAG_NAME}"
+        log_info "访问: https://gitcode.com/${REPO_PATH}/releases/tag/${TAG_NAME}"
     else
         log_error "验证失败"
         exit 1
