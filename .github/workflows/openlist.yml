@@ -13,129 +13,133 @@ jobs:
   # ========================================
   # 检查版本更新
   # ========================================
-  check-updates:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-      has_updates: ${{ steps.set-matrix.outputs.has_updates }}
-    
-    steps:
-      - name: 检出仓库
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
+ check-updates:
+  runs-on: ubuntu-latest
+  outputs:
+    matrix: ${{ steps.set-matrix.outputs.matrix }}
+    has_updates: ${{ steps.set-matrix.outputs.has_updates }}
+  
+  steps:
+    - name: 检出仓库
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
 
-      - name: 配置 version-manager.sh
-        run: chmod +x .github/workflows/scripts/version-manager.sh
+    - name: 配置 version-manager.sh
+      run: chmod +x .github/workflows/scripts/version-manager.sh
 
-      - name: 检查项目更新
-        id: check
-        run: |
-          # 项目配置（只有 openlist2）
-          PROJECTS='[
-            {
-              "github_owner": "sbwml",
-              "github_repo": "luci-app-openlist2",
-              "local_name": "openlist"
-            }
-          ]'
+    - name: 检查项目更新
+      id: check
+      run: |
+        # 项目配置（只有 openlist2）
+        PROJECTS='[
+          {
+            "github_owner": "sbwml",
+            "github_repo": "luci-app-openlist2",
+            "local_name": "openlist2"
+          }
+        ]'
+        
+        UPDATES='[]'
+        
+        # 🔧 修复：使用进程替换而不是管道
+        while read -r project; do
+          github_owner=$(echo "$project" | jq -r '.github_owner')
+          github_repo=$(echo "$project" | jq -r '.github_repo')
+          local_name=$(echo "$project" | jq -r '.local_name')
           
-          UPDATES='[]'
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "检查: ${github_owner}/${github_repo} -> $local_name"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           
-          echo "$PROJECTS" | jq -c '.[]' | while read -r project; do
-            github_owner=$(echo "$project" | jq -r '.github_owner')
-            github_repo=$(echo "$project" | jq -r '.github_repo')
-            local_name=$(echo "$project" | jq -r '.local_name')
-            
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "检查: ${github_owner}/${github_repo} -> $local_name"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            
-            # 获取上游最新版本
-            latest_tag=$(curl -s "https://api.github.com/repos/${github_owner}/${github_repo}/tags" | jq -r '.[0].name // empty')
-            
-            if [ -z "$latest_tag" ]; then
-              echo "⚠️  未找到上游版本，跳过"
-              continue
-            fi
-            
-            echo "上游版本: $latest_tag"
-            
-            # 获取本地记录的版本
-            local_version=$(.github/workflows/scripts/version-manager.sh read "$local_name" || echo "")
-            
-            if [ -z "$local_version" ]; then
-              echo "本地版本: 无记录"
-              echo "✅ 需要构建（新项目）"
-              needs_build="true"
-            elif [ "$local_version" != "$latest_tag" ]; then
-              echo "本地版本: $local_version"
-              echo "✅ 需要构建（版本不同）"
-              needs_build="true"
-            else
-              echo "本地版本: $local_version"
-              echo "ℹ️  版本相同，跳过"
-              needs_build="false"
-            fi
-            
-            # 强制构建
-            if [ "${{ inputs.force_build }}" = "true" ]; then
-              echo "🔄 强制构建模式"
-              needs_build="true"
-            fi
-            
-            if [ "$needs_build" = "true" ]; then
-              UPDATES=$(echo "$UPDATES" | jq -c \
-                --arg owner "$github_owner" \
-                --arg repo "$github_repo" \
-                --arg name "$local_name" \
-                --arg version "$latest_tag" \
-                '. += [{
-                  "github_owner": $owner,
-                  "github_repo": $repo,
-                  "local_name": $name,
-                  "version": $version
-                }]')
-            fi
-            
-            echo ""
-          done
+          # 获取上游最新版本
+          latest_tag=$(curl -s "https://api.github.com/repos/${github_owner}/${github_repo}/tags" | jq -r '.[0].name // empty')
           
-          # 保存到文件，避免管道问题
-          echo "$UPDATES" > /tmp/updates.json
-          cat /tmp/updates.json
-
-      - name: 读取更新列表
-        id: read-updates
-        run: |
-          if [ -f /tmp/updates.json ]; then
-            UPDATES=$(cat /tmp/updates.json)
-          else
-            UPDATES='[]'
+          if [ -z "$latest_tag" ]; then
+            echo "⚠️  未找到上游版本，跳过"
+            continue
           fi
-          echo "updates=$UPDATES" >> $GITHUB_OUTPUT
-
-      - name: 设置构建矩阵
-        id: set-matrix
-        run: |
-          UPDATES='${{ steps.read-updates.outputs.updates }}'
           
-          if [ "$UPDATES" = "[]" ] || [ -z "$UPDATES" ]; then
-            echo "has_updates=false" >> $GITHUB_OUTPUT
-            echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
-            echo "::notice::没有需要构建的项目"
+          echo "上游版本: $latest_tag"
+          
+          # 获取本地记录的版本
+          local_version=$(.github/workflows/scripts/version-manager.sh read "$local_name" 2>/dev/null || echo "")
+          
+          if [ -z "$local_version" ]; then
+            echo "本地版本: 无记录"
+            echo "✅ 需要构建（新项目）"
+            needs_build="true"
+          elif [ "$local_version" != "$latest_tag" ]; then
+            echo "本地版本: $local_version"
+            echo "✅ 需要构建（版本不同）"
+            needs_build="true"
           else
-            echo "has_updates=true" >> $GITHUB_OUTPUT
-            echo "matrix={\"include\":$UPDATES}" >> $GITHUB_OUTPUT
-            
-            echo "需要构建的项目:"
-            echo "$UPDATES" | jq -r '.[] | "  - \(.local_name) (\(.version))"'
+            echo "本地版本: $local_version"
+            echo "ℹ️  版本相同，跳过"
+            needs_build="false"
           fi
+          
+          # 强制构建
+          if [ "${{ inputs.force_build }}" = "true" ]; then
+            echo "🔄 强制构建模式"
+            needs_build="true"
+          fi
+          
+          if [ "$needs_build" = "true" ]; then
+            echo "📝 添加到构建列表"
+            UPDATES=$(echo "$UPDATES" | jq -c \
+              --arg owner "$github_owner" \
+              --arg repo "$github_repo" \
+              --arg name "$local_name" \
+              --arg version "$latest_tag" \
+              '. += [{
+                "github_owner": $owner,
+                "github_repo": $repo,
+                "local_name": $name,
+                "version": $version
+              }]')
+            
+            # 调试：显示当前 UPDATES
+            echo "当前 UPDATES: $UPDATES"
+          fi
+          
+          echo ""
+        done < <(echo "$PROJECTS" | jq -c '.[]')
+        
+        # 输出最终结果
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "最终构建列表:"
+        echo "$UPDATES" | jq '.'
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        
+        # 输出到 GitHub Actions
+        echo "updates=$UPDATES" >> $GITHUB_OUTPUT
+
+    - name: 设置构建矩阵
+      id: set-matrix
+      run: |
+        UPDATES='${{ steps.check.outputs.updates }}'
+        
+        echo "接收到的 UPDATES:"
+        echo "$UPDATES"
+        echo ""
+        
+        if [ "$UPDATES" = "[]" ] || [ -z "$UPDATES" ] || [ "$UPDATES" = "null" ]; then
+          echo "has_updates=false" >> $GITHUB_OUTPUT
+          echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+          echo "::notice::没有需要构建的项目"
+        else
+          echo "has_updates=true" >> $GITHUB_OUTPUT
+          echo "matrix={\"include\":$UPDATES}" >> $GITHUB_OUTPUT
+          
+          echo "需要构建的项目:"
+          echo "$UPDATES" | jq -r '.[] | "  - \(.local_name) (\(.version))"'
+        fi
 
   # ========================================
   # 并行编译（保留所有架构）
   # ========================================
-  build:
+ build:
     name: ${{ matrix.project.local_name }}-${{ matrix.arch }}-${{ matrix.sdk }}
     runs-on: ubuntu-latest
     needs: check-updates
@@ -209,7 +213,7 @@ jobs:
   # ========================================
   # 收集编译产物并发布
   # ========================================
-  release:
+ release:
     name: 发布 ${{ matrix.project.local_name }}
     runs-on: ubuntu-latest
     needs: [check-updates, build]
@@ -405,7 +409,7 @@ jobs:
   # ========================================
   # 生成报告
   # ========================================
-  report:
+ report:
     runs-on: ubuntu-latest
     needs: [check-updates, build, release]
     if: always()
