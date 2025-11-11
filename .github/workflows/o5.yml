@@ -1,11 +1,7 @@
-name: Upload to GitCode Release
+name: Debug GitCode Release
 
 on:
-  workflow_dispatch:   # 手动触发，方便测试
-  # 你也可以改成 push 标签自动触发：
-  # push:
-  #   tags:
-  #     - 'v*'
+  workflow_dispatch:
 
 jobs:
   release:
@@ -13,18 +9,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
 
       - name: Generate test file
         run: echo "Hello GitCode Release" > demo.txt
 
       - name: Create or Get Release
-        id: release
         run: |
           TAG_NAME="v1.0.0"
 
-          # 尝试创建 Release
+          echo "=== 尝试创建 Release ==="
           HTTP_CODE=$(curl -s -w "%{http_code}" -o response.json \
             -X POST https://api.gitcode.com/api/v5/repos/whzhni/test-release/releases \
             -H "Content-Type: application/json" \
@@ -35,23 +28,27 @@ jobs:
               \"body\": \"自动创建的 Release\"
             }")
 
+          echo "HTTP_CODE=$HTTP_CODE"
+          echo "返回内容："
+          cat response.json
+
           if [ "$HTTP_CODE" -eq 201 ]; then
-            echo "Release created successfully"
             RELEASE_ID=$(jq -r '.id' response.json)
           else
-            echo "Release already exists, fetching ID..."
-            RELEASE_ID=$(curl -s \
+            echo "=== 查询已有 Release 列表 ==="
+            LIST=$(curl -s \
               -H "PRIVATE-TOKEN: ${{ secrets.GITCODE_TOKEN }}" \
-              https://api.gitcode.com/api/v5/repos/whzhni/test-release/releases \
-              | jq -r ".[] | select(.tag_name==\"${TAG_NAME}\") | .id")
+              https://api.gitcode.com/api/v5/repos/whzhni/test-release/releases)
+            echo "$LIST"
+            RELEASE_ID=$(echo "$LIST" | jq -r ".[] | select(.tag_name==\"${TAG_NAME}\") | .id")
           fi
 
-          echo "RELEASE_ID=$RELEASE_ID"
+          echo "最终 RELEASE_ID=$RELEASE_ID"
           echo "RELEASE_ID=$RELEASE_ID" >> $GITHUB_ENV
 
       - name: Upload file to GitCode Release
         run: |
-          echo "Uploading to Release ID: $RELEASE_ID"
-          curl -X POST https://api.gitcode.com/api/v5/repos/whzhni/test-release/releases/$RELEASE_ID/assets \
+          echo "准备上传到 Release ID: $RELEASE_ID"
+          curl -v -X POST https://api.gitcode.com/api/v5/repos/whzhni/test-release/releases/$RELEASE_ID/assets \
             -H "PRIVATE-TOKEN: ${{ secrets.GITCODE_TOKEN }}" \
             -F "file=@demo.txt"
