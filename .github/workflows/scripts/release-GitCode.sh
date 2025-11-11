@@ -86,20 +86,43 @@ api_delete() {
 
 api_upload() {
     local file="$1"
-    local url="${API_BASE}/repos/${REPO_PATH}/releases/${TAG_NAME}/attach_files?access_token=${GITCODE_TOKEN}"
+    local release_id="$2"
+    
+    # 尝试两种可能的接口
+    # 方式1: 使用 release_id
+    local url1="${API_BASE}/repos/${REPO_PATH}/releases/${release_id}/attach_files?access_token=${GITCODE_TOKEN}"
+    # 方式2: 使用 tag_name
+    local url2="${API_BASE}/repos/${REPO_PATH}/releases/tags/${TAG_NAME}/attach_files?access_token=${GITCODE_TOKEN}"
+    
+    log_debug "尝试上传接口 1: /repos/${REPO_PATH}/releases/${release_id}/attach_files"
     
     response=$(curl -s -w "\n%{http_code}" -X POST \
         -F "file=@${file}" \
-        "$url")
+        "$url1")
     
     http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$d')
     
+    log_debug "HTTP Code: $http_code"
+    
     if [ "$http_code" -ge 400 ]; then
-        log_debug "UPLOAD - HTTP $http_code"
-        log_debug "Response: $body"
-        echo "$body"
-        return 1
+        log_debug "接口 1 失败，尝试接口 2: /repos/${REPO_PATH}/releases/tags/${TAG_NAME}/attach_files"
+        
+        response=$(curl -s -w "\n%{http_code}" -X POST \
+            -F "file=@${file}" \
+            "$url2")
+        
+        http_code=$(echo "$response" | tail -n1)
+        body=$(echo "$response" | sed '$d')
+        
+        log_debug "HTTP Code: $http_code"
+        
+        if [ "$http_code" -ge 400 ]; then
+            log_debug "接口 2 也失败"
+            log_debug "Response: $body"
+            echo "$body"
+            return 1
+        fi
     fi
     
     echo "$body"
@@ -280,10 +303,22 @@ create_release() {
         exit 1
     fi
     
-    # 检查是否创建成功（检查 tag_name 字段）
+    # 提取 id（尝试多种格式）
+    RELEASE_ID=$(echo "$response" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('id', ''))" 2>/dev/null || echo "")
+    
+    if [ -z "$RELEASE_ID" ]; then
+        # 如果 python 失败，尝试用 grep
+        RELEASE_ID=$(echo "$response" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+    fi
+    
+    # 检查是否创建成功
     if echo "$response" | grep -q "\"tag_name\":\"${TAG_NAME}\""; then
         log_success "Release 创建成功"
-        log_debug "使用 tag_name: ${TAG_NAME} 作为标识符"
+        if [ -n "$RELEASE_ID" ]; then
+            log_debug "Release ID: ${RELEASE_ID}"
+        else
+            log_warning "未获取到 Release ID，将使用 tag_name"
+        fi
     else
         log_error "Release 创建失败，响应异常"
         log_debug "响应: $response"
@@ -319,7 +354,10 @@ upload_files() {
         filename=$(basename "$file")
         log_info "[$(( uploaded + failed + 1 ))/${total}] $filename ($size)"
         
-        if response=$(api_upload "$file"); then
+        # 使用 RELEASE_ID 或 TAG_NAME
+        local upload_id="${RELEASE_ID:-${TAG_NAME}}"
+        
+        if response=$(api_upload "$file" "$upload_id"); then
             if echo "$response" | grep -q '"name"'; then
                 log_success "上传成功"
                 uploaded=$((uploaded + 1))
