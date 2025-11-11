@@ -167,7 +167,94 @@ ensure_branch() {
     sleep 3
 }
 
-cleanup_old_tags
+cleanup_old_tags() {
+    echo ""
+    log_info "步骤 3/5: 清理旧标签和 Release"
+    
+    local deleted_count=0
+    
+    # ============ 获取所有 Tag ============
+    log_debug "获取标签列表..."
+    local tags_response=$(api_get "/repos/${REPO_PATH}/tags")
+    
+    if ! echo "$tags_response" | jq -e '.[0]' > /dev/null 2>&1; then
+        log_info "没有旧标签"
+        return 0
+    fi
+    
+    local tags=$(echo "$tags_response" | jq -r '.[].name' 2>/dev/null)
+    
+    if [ -z "$tags" ]; then
+        log_info "没有旧标签"
+        return 0
+    fi
+    
+    # ============ 遍历并删除 ============
+    while IFS= read -r tag; do
+        [ -z "$tag" ] || [ "$tag" = "$TAG_NAME" ] && continue
+        
+        # 只删除版本号格式的标签
+        if ! echo "$tag" | grep -qE '^(v[0-9]|[0-9])'; then
+            continue
+        fi
+        
+        echo ""
+        log_warning "清理: $tag"
+        
+        # 步骤1: 检查是否有关联的 Release
+        local release=$(api_get "/repos/${REPO_PATH}/releases/tags/${tag}")
+        local release_id=$(echo "$release" | jq -r '.id // empty')
+        
+        if [ -n "$release_id" ] && [ "$release_id" != "null" ]; then
+            log_debug "  删除关联的 Release (ID: $release_id)..."
+            local http_code=$(api_delete "/repos/${REPO_PATH}/releases/${release_id}")
+            
+            if [ "$http_code" -eq 204 ] || [ "$http_code" -eq 200 ]; then
+                log_debug "  ✓ Release 已删除"
+            else
+                log_debug "  ! Release 删除失败 (HTTP $http_code)"
+            fi
+            
+            sleep 1
+        fi
+        
+        # 步骤2: 删除 Git Tag（关键修复）
+        log_debug "  删除 Git 标签..."
+        
+        # 方法1: 尝试标准 API
+        local delete_url="${API_BASE}/repos/${REPO_PATH}/git/refs/tags/${tag}?access_token=${GITEE_TOKEN}"
+        local http_code=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$delete_url")
+        
+        if [ "$http_code" -eq 204 ] || [ "$http_code" -eq 200 ]; then
+            log_success "  ✓ 标签已删除"
+            deleted_count=$((deleted_count + 1))
+        elif [ "$http_code" -eq 404 ]; then
+            # 方法2: 尝试简化路径
+            log_debug "  尝试备用 API..."
+            delete_url="${API_BASE}/repos/${REPO_PATH}/tags/${tag}?access_token=${GITEE_TOKEN}"
+            http_code=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$delete_url")
+            
+            if [ "$http_code" -eq 204 ] || [ "$http_code" -eq 200 ]; then
+                log_success "  ✓ 标签已删除"
+                deleted_count=$((deleted_count + 1))
+            else
+                log_error "  ✗ 标签删除失败 (HTTP $http_code)"
+                log_debug "  URL: $delete_url"
+            fi
+        else
+            log_error "  ✗ 标签删除失败 (HTTP $http_code)"
+        fi
+        
+        sleep 1
+    done <<< "$tags"
+    
+    echo ""
+    if [ $deleted_count -gt 0 ]; then
+        log_success "已清理 $deleted_count 个旧版本"
+    else
+        log_warning "没有标签被删除，可能需要检查权限"
+    fi
+}
 
 create_release() {
     echo ""
