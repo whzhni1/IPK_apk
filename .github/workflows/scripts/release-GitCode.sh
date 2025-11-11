@@ -12,7 +12,7 @@ RELEASE_TITLE="${RELEASE_TITLE:-Release ${TAG_NAME}}"
 RELEASE_BODY="${RELEASE_BODY:-Release ${TAG_NAME}}"
 BRANCH="${BRANCH:-main}"
 UPLOAD_FILES="${UPLOAD_FILES:-}"
-UPLOAD_METHOD="${UPLOAD_METHOD:-auto}"  # auto, release, repo
+DEBUG="${DEBUG:-false}"
 
 API_BASE="https://gitcode.com/api/v5"
 REPO_PATH="${USERNAME}/${REPO_NAME}"
@@ -28,7 +28,7 @@ log_info() { echo -e "${CYAN}[INFO]${NC} $*"; }
 log_success() { echo -e "${GREEN}[✓]${NC} $*"; }
 log_warning() { echo -e "${YELLOW}[!]${NC} $*"; }
 log_error() { echo -e "${RED}[✗]${NC} $*"; }
-log_debug() { echo -e "${BLUE}[DEBUG]${NC} $*"; }
+log_debug() { [ "$DEBUG" = "true" ] && echo -e "${BLUE}[DEBUG]${NC} $*"; }
 
 api_get() {
     local endpoint="$1"
@@ -79,25 +79,117 @@ api_delete() {
     [ "$http_code" -eq 204 ] || [ "$http_code" -eq 200 ] || [ "$http_code" -eq 404 ]
 }
 
-# 方法1: 上传到 Release 附件（需要 all_projects 权限）
-upload_to_release() {
+# 尝试多种方式获取上传 URL
+get_upload_url() {
+    local filename="$1"
+    
+    log_info "尝试获取上传 URL..."
+    
+    # 方式1: access_token in query
+    log_debug "方式1: access_token query 参数"
+    local url1="${API_BASE}/repos/${USERNAME}/${REPO_NAME}/releases/${TAG_NAME}/upload_url?access_token=${GITCODE_TOKEN}&file_name=${filename}"
+    
+    response=$(curl -s -w "\n%{http_code}" "$url1")
+    http_code=$(echo "$response" | tail -n1)
+    body=$(echo "$response" | sed '$d')
+    
+    log_debug "HTTP $http_code: ${body:0:200}"
+    
+    if [ "$http_code" -eq 200 ]; then
+        log_success "方式1成功"
+        echo "$body"
+        return 0
+    fi
+    
+    # 方式2: PRIVATE-TOKEN header (GitLab style)
+    log_debug "方式2: PRIVATE-TOKEN header"
+    local url2="${API_BASE}/repos/${USERNAME}/${REPO_NAME}/releases/${TAG_NAME}/upload_url?file_name=${filename}"
+    
+    response=$(curl -s -w "\n%{http_code}" \
+        -H "PRIVATE-TOKEN: ${GITCODE_TOKEN}" \
+        "$url2")
+    
+    http_code=$(echo "$response" | tail -n1)
+    body=$(echo "$response" | sed '$d')
+    
+    log_debug "HTTP $http_code: ${body:0:200}"
+    
+    if [ "$http_code" -eq 200 ]; then
+        log_success "方式2成功"
+        echo "$body"
+        return 0
+    fi
+    
+    # 方式3: Authorization Bearer
+    log_debug "方式3: Authorization Bearer"
+    
+    response=$(curl -s -w "\n%{http_code}" \
+        -H "Authorization: Bearer ${GITCODE_TOKEN}" \
+        "$url2")
+    
+    http_code=$(echo "$response" | tail -n1)
+    body=$(echo "$response" | sed '$d')
+    
+    log_debug "HTTP $http_code: ${body:0:200}"
+    
+    if [ "$http_code" -eq 200 ]; then
+        log_success "方式3成功"
+        echo "$body"
+        return 0
+    fi
+    
+    # 方式4: Authorization token (Gitee style)
+    log_debug "方式4: Authorization token"
+    
+    response=$(curl -s -w "\n%{http_code}" \
+        -H "Authorization: token ${GITCODE_TOKEN}" \
+        "$url2")
+    
+    http_code=$(echo "$response" | tail -n1)
+    body=$(echo "$response" | sed '$d')
+    
+    log_debug "HTTP $http_code: ${body:0:200}"
+    
+    if [ "$http_code" -eq 200 ]; then
+        log_success "方式4成功"
+        echo "$body"
+        return 0
+    fi
+    
+    # 所有方式都失败
+    log_error "所有认证方式均失败"
+    echo ""
+    echo "错误详情:"
+    echo "$body"
+    echo ""
+    echo "可能的原因:"
+    echo "1. Token 缺少特定权限（虽然界面显示已勾选全部）"
+    echo "2. GitCode API 的这个功能可能有限制或 bug"
+    echo "3. 需要联系 GitCode 支持确认权限配置"
+    echo ""
+    echo "建议操作:"
+    echo "1. 访问 GitCode 设置 → 访问令牌"
+    echo "2. 删除现有 Token，重新创建"
+    echo "3. 确保勾选了所有项目相关权限"
+    echo "4. 或者联系 GitCode 技术支持"
+    
+    return 1
+}
+
+upload_file_to_release() {
     local file="$1"
     local filename=$(basename "$file")
     
-    log_debug "获取上传 URL..."
+    log_info "上传: $filename ($(du -h "$file" | cut -f1))"
     
-    upload_info=$(api_get "/repos/${USERNAME}/${REPO_NAME}/releases/${TAG_NAME}/upload_url?file_name=${filename}")
+    # 获取上传 URL
+    upload_info=$(get_upload_url "$filename")
     
     if [ $? -ne 0 ]; then
-        if echo "$upload_info" | grep -q "no scopes:all_projects"; then
-            log_error "Token 缺少 all_projects 权限"
-            return 2  # 返回 2 表示权限不足
-        else
-            log_error "获取上传 URL 失败"
-            return 1
-        fi
+        return 1
     fi
     
+    # 提取 URL
     if command -v jq &> /dev/null; then
         upload_url=$(echo "$upload_info" | jq -r '.url // empty')
     else
@@ -105,96 +197,32 @@ upload_to_release() {
     fi
     
     if [ -z "$upload_url" ]; then
-        log_error "无法获取上传 URL"
+        log_error "无法提取上传 URL"
+        log_debug "响应: $upload_info"
         return 1
     fi
     
-    log_debug "执行上传..."
+    log_debug "上传 URL: ${upload_url:0:50}..."
+    log_info "执行 PUT 上传..."
     
+    # 上传文件
     response=$(curl -s -w "\n%{http_code}" -X PUT \
         -H "Content-Type: application/octet-stream" \
         --data-binary "@${file}" \
         "$upload_url")
     
     http_code=$(echo "$response" | tail -n1)
-    
-    if [ "$http_code" -eq 200 ] || [ "$http_code" -eq 201 ] || [ "$http_code" -eq 204 ]; then
-        log_success "上传成功（Release 附件）"
-        return 0
-    else
-        log_error "上传失败 (HTTP $http_code)"
-        return 1
-    fi
-}
-
-# 方法2: 上传到仓库文件（降级方案）
-upload_to_repo() {
-    local file="$1"
-    local filename=$(basename "$file")
-    
-    file_size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo 0)
-    file_size_mb=$((file_size / 1024 / 1024))
-    
-    if [ $file_size_mb -gt 20 ]; then
-        log_error "文件超过20M限制: $filename ($file_size_mb MB)"
-        return 1
-    fi
-    
-    log_debug "使用仓库文件上传接口..."
-    
-    response=$(curl -s -w "\n%{http_code}" -X POST \
-        -F "file=@${file}" \
-        "${API_BASE}/repos/${USERNAME}/${REPO_NAME}/file/upload?access_token=${GITCODE_TOKEN}")
-    
-    http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$d')
     
-    if [ "$http_code" -eq 200 ] || [ "$http_code" -eq 201 ]; then
-        if command -v jq &> /dev/null; then
-            file_path=$(echo "$body" | jq -r '.path // .full_path // empty')
-        else
-            file_path=$(echo "$body" | grep -o '"path":"[^"]*"' | head -1 | cut -d'"' -f4)
-        fi
-        
-        log_success "上传成功（仓库文件）"
-        
-        if [ -n "$file_path" ]; then
-            FILE_LINKS="${FILE_LINKS}\n- [${filename}](https://gitcode.com/${REPO_PATH}/blob/${BRANCH}/${file_path})"
-        fi
+    log_debug "上传响应 HTTP $http_code"
+    
+    if [ "$http_code" -eq 200 ] || [ "$http_code" -eq 201 ] || [ "$http_code" -eq 204 ]; then
+        log_success "上传成功"
         return 0
     else
         log_error "上传失败 (HTTP $http_code)"
+        log_debug "响应: ${body:0:300}"
         return 1
-    fi
-}
-
-# 智能上传：自动选择方法
-upload_file() {
-    local file="$1"
-    local filename=$(basename "$file")
-    
-    log_info "上传: $filename ($(du -h "$file" | cut -f1))"
-    
-    # 根据配置选择上传方式
-    if [ "$UPLOAD_METHOD" = "release" ]; then
-        upload_to_release "$file"
-    elif [ "$UPLOAD_METHOD" = "repo" ]; then
-        upload_to_repo "$file"
-    else
-        # auto: 先尝试 release，失败则降级到 repo
-        upload_to_release "$file"
-        local result=$?
-        
-        if [ $result -eq 2 ]; then
-            # 权限不足，降级
-            log_warning "降级使用仓库文件上传"
-            UPLOAD_METHOD="repo"  # 后续文件直接用这个方式
-            upload_to_repo "$file"
-        elif [ $result -ne 0 ]; then
-            # 其他错误，尝试降级
-            log_warning "尝试降级方案..."
-            upload_to_repo "$file"
-        fi
     fi
 }
 
@@ -208,6 +236,22 @@ check_token() {
     fi
     
     log_success "Token 已配置"
+    
+    # 测试 Token 有效性
+    log_info "测试 Token 权限..."
+    
+    user_info=$(api_get "/user" 2>&1)
+    
+    if echo "$user_info" | grep -q '"login"'; then
+        if command -v jq &> /dev/null; then
+            user_login=$(echo "$user_info" | jq -r '.login')
+            log_success "Token 有效 (用户: $user_login)"
+        else
+            log_success "Token 有效"
+        fi
+    else
+        log_warning "Token 可能权限不足"
+    fi
 }
 
 ensure_repository() {
@@ -278,7 +322,17 @@ cleanup_old_tags() {
     log_info "步骤 3/5: 清理旧标签"
     
     response=$(api_get "/repos/${REPO_PATH}/tags" 2>/dev/null || echo "")
-    tags=$(echo "$response" | grep -o '"name":"[^"]*"' | cut -d'"' -f4 | grep -v "^$")
+    
+    if [ -z "$response" ] || ! echo "$response" | grep -q '\['; then
+        log_info "没有旧标签"
+        return 0
+    fi
+    
+    if command -v jq &> /dev/null; then
+        tags=$(echo "$response" | jq -r '.[].name' 2>/dev/null)
+    else
+        tags=$(echo "$response" | grep -o '{"name":"[^"]*"' | cut -d'"' -f4)
+    fi
     
     if [ -z "$tags" ]; then
         log_info "没有旧标签"
@@ -289,12 +343,26 @@ cleanup_old_tags() {
     while IFS= read -r tag; do
         [ -z "$tag" ] || [ "$tag" = "$TAG_NAME" ] && continue
         
+        if ! echo "$tag" | grep -qE '^(v[0-9]|[0-9])'; then
+            log_debug "跳过无效标签: $tag"
+            continue
+        fi
+        
         log_warning "删除: $tag"
-        api_delete "/repos/${REPO_PATH}/tags/${tag}" && { log_success "已删除"; deleted=$((deleted + 1)); }
+        
+        if api_delete "/repos/${REPO_PATH}/tags/${tag}"; then
+            log_success "已删除"
+            deleted=$((deleted + 1))
+        fi
+        
         sleep 1
     done <<< "$tags"
     
-    [ $deleted -gt 0 ] && log_info "已删除 $deleted 个旧标签"
+    if [ $deleted -gt 0 ]; then
+        log_info "已删除 $deleted 个旧标签"
+    else
+        log_info "没有需要删除的标签"
+    fi
 }
 
 create_release() {
@@ -325,7 +393,7 @@ create_release() {
 
 upload_files() {
     echo ""
-    log_info "步骤 5/5: 上传文件"
+    log_info "步骤 5/5: 上传文件到 Release 附件"
     
     if [ -z "$UPLOAD_FILES" ]; then
         log_info "没有文件需要上传"
@@ -334,7 +402,6 @@ upload_files() {
     
     uploaded=0
     failed=0
-    FILE_LINKS=""
     
     IFS=' ' read -ra FILES <<< "$UPLOAD_FILES"
     total=${#FILES[@]}
@@ -351,7 +418,7 @@ upload_files() {
         echo ""
         log_info "[$(( uploaded + failed + 1 ))/${total}] $(basename "$file")"
         
-        if upload_file "$file"; then
+        if upload_file_to_release "$file"; then
             uploaded=$((uploaded + 1))
         else
             failed=$((failed + 1))
@@ -359,33 +426,16 @@ upload_files() {
     done
     
     echo ""
-    log_success "上传完成: $uploaded 成功, $failed 失败"
     
-    # 如果使用了仓库文件上传，更新 Release 描述
-    if [ "$UPLOAD_METHOD" = "repo" ] && [ -n "$FILE_LINKS" ]; then
+    if [ $uploaded -gt 0 ]; then
+        log_success "上传完成: $uploaded 成功, $failed 失败"
+    else
+        log_error "所有文件上传失败"
         echo ""
-        log_info "更新 Release 描述添加文件链接..."
-        
-        # 获取 Release ID
-        rel_info=$(api_get "/repos/${REPO_PATH}/releases/tags/${TAG_NAME}")
-        
-        if command -v jq &> /dev/null; then
-            rel_id=$(echo "$rel_info" | jq -r '.id // empty')
-        else
-            rel_id=$(echo "$rel_info" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
-        fi
-        
-        if [ -n "$rel_id" ]; then
-            new_body="${RELEASE_BODY}\n\n## 📦 发布文件${FILE_LINKS}"
-            new_body_escaped=$(echo -e "$new_body" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | awk '{printf "%s\\n", $0}' | sed 's/\\n$//')
-            
-            response=$(curl -s -X PATCH \
-                -H "Content-Type: application/json" \
-                -d "{\"tag_name\":\"${TAG_NAME}\",\"name\":\"${RELEASE_TITLE}\",\"body\":\"${new_body_escaped}\"}" \
-                "${API_BASE}/repos/${USERNAME}/${REPO_NAME}/releases/${rel_id}?access_token=${GITCODE_TOKEN}")
-            
-            echo "$response" | grep -q "\"tag_name\"" && log_success "描述已更新" || log_warning "描述更新失败"
-        fi
+        echo "请尝试以下操作:"
+        echo "1. 重新生成 GitCode Token"
+        echo "2. 联系 GitCode 支持确认 API 权限问题"
+        echo "3. 或手动在网页上传文件: https://gitcode.com/${REPO_PATH}/releases"
     fi
 }
 
@@ -398,7 +448,7 @@ verify_release() {
         
         if command -v jq &> /dev/null; then
             assets_count=$(echo "$response" | jq '.assets | length')
-            [ "$assets_count" -gt 0 ] && log_info "附件数量: $assets_count"
+            log_info "附件数量: $assets_count"
         fi
     else
         log_error "验证失败"
@@ -412,7 +462,7 @@ main() {
     echo ""
     echo "仓库: ${REPO_PATH}"
     echo "标签: ${TAG_NAME}"
-    echo "上传方式: ${UPLOAD_METHOD}"
+    echo "调试模式: ${DEBUG}"
     
     check_token
     ensure_repository
@@ -426,12 +476,6 @@ main() {
     log_success "🎉 Release 创建完成"
     echo ""
     echo "访问: https://gitcode.com/${REPO_PATH}/releases"
-    
-    if [ "$UPLOAD_METHOD" = "repo" ]; then
-        echo ""
-        log_warning "注意: 使用了仓库文件上传（降级方案）"
-        echo "建议重新生成 Token 并勾选 all_projects 权限以使用 Release 附件功能"
-    fi
     echo ""
 }
 
