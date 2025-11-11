@@ -17,8 +17,7 @@ jobs:
         run: |
           TAG_NAME="v1.0.0"
 
-          echo "=== 尝试创建 Release ==="
-          HTTP_CODE=$(curl -s -w "%{http_code}" -o response.json \
+          RESPONSE=$(curl -s -w "%{http_code}" -o response.json \
             -X POST https://api.gitcode.com/api/v5/repos/whzhni/test-release/releases \
             -H "Content-Type: application/json" \
             -H "PRIVATE-TOKEN: ${{ secrets.GITCODE_TOKEN }}" \
@@ -28,23 +27,19 @@ jobs:
               \"body\": \"自动创建的 Release\"
             }")
 
-          echo "HTTP_CODE=$HTTP_CODE"
-          echo "返回内容："
-          cat response.json
-
-          if [ "$HTTP_CODE" -eq 201 ]; then
+          if [ "$RESPONSE" -eq 201 ]; then
             RELEASE_ID=$(jq -r '.id' response.json)
           else
-            echo "=== 查询已有 Release 列表 ==="
-            LIST=$(curl -s \
+            RELEASE_JSON=$(curl -s \
               -H "PRIVATE-TOKEN: ${{ secrets.GITCODE_TOKEN }}" \
-              https://api.gitcode.com/api/v5/repos/whzhni/test-release/releases)
-            echo "$LIST"
-            RELEASE_ID=$(echo "$LIST" | jq -r ".[] | select(.tag_name==\"${TAG_NAME}\") | .id")
+              https://api.gitcode.com/api/v5/repos/whzhni/test-release/releases/tags/${TAG_NAME})
+            echo "$RELEASE_JSON"
+            RELEASE_ID=$(echo "$RELEASE_JSON" | jq -r '.id')
           fi
 
           echo "最终 RELEASE_ID=$RELEASE_ID"
           echo "RELEASE_ID=$RELEASE_ID" >> $GITHUB_ENV
+
 
       - name: Upload file to GitCode Release
         run: |
