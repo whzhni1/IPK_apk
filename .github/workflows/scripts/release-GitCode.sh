@@ -30,42 +30,80 @@ log_info() { echo -e "${CYAN}[INFO]${NC} $*"; }
 log_success() { echo -e "${GREEN}[✓]${NC} $*"; }
 log_warning() { echo -e "${YELLOW}[!]${NC} $*"; }
 log_error() { echo -e "${RED}[✗]${NC} $*"; }
+log_debug() { echo -e "${BLUE}[DEBUG]${NC} $*"; }
 
-# API v5 使用 access_token query 参数
+# API v5 请求
 api_get() {
     local endpoint="$1"
-    curl -s "${API_BASE}${endpoint}?access_token=${GITCODE_TOKEN}"
+    local url="${API_BASE}${endpoint}"
+    [ "$url" == *"?"* ] && url="${url}&access_token=${GITCODE_TOKEN}" || url="${url}?access_token=${GITCODE_TOKEN}"
+    
+    response=$(curl -s -w "\n%{http_code}" "$url")
+    http_code=$(echo "$response" | tail -n1)
+    body=$(echo "$response" | sed '$d')
+    
+    if [ "$http_code" -ge 400 ]; then
+        log_debug "GET $endpoint - HTTP $http_code"
+        log_debug "Response: $body"
+        echo "$body"
+        return 1
+    fi
+    
+    echo "$body"
 }
 
 api_post() {
     local endpoint="$1"
     local data="$2"
-    curl -s -X POST \
+    local url="${API_BASE}${endpoint}"
+    [ "$url" == *"?"* ] && url="${url}&access_token=${GITCODE_TOKEN}" || url="${url}?access_token=${GITCODE_TOKEN}"
+    
+    response=$(curl -s -w "\n%{http_code}" -X POST \
         -H "Content-Type: application/json" \
         -d "$data" \
-        "${API_BASE}${endpoint}?access_token=${GITCODE_TOKEN}"
-}
-
-api_patch() {
-    local endpoint="$1"
-    local data="$2"
-    curl -s -X PATCH \
-        -H "Content-Type: application/json" \
-        -d "$data" \
-        "${API_BASE}${endpoint}?access_token=${GITCODE_TOKEN}"
+        "$url")
+    
+    http_code=$(echo "$response" | tail -n1)
+    body=$(echo "$response" | sed '$d')
+    
+    if [ "$http_code" -ge 400 ]; then
+        log_debug "POST $endpoint - HTTP $http_code"
+        log_debug "Request: $data"
+        log_debug "Response: $body"
+        echo "$body"
+        return 1
+    fi
+    
+    echo "$body"
 }
 
 api_delete() {
     local endpoint="$1"
-    curl -s -X DELETE "${API_BASE}${endpoint}?access_token=${GITCODE_TOKEN}"
+    local url="${API_BASE}${endpoint}?access_token=${GITCODE_TOKEN}"
+    
+    curl -s -X DELETE "$url"
 }
 
 api_upload() {
     local file="$1"
     local release_id="$2"
-    curl -s -X POST \
+    local url="${API_BASE}/repos/${REPO_PATH}/releases/${release_id}/attach_files?access_token=${GITCODE_TOKEN}"
+    
+    response=$(curl -s -w "\n%{http_code}" -X POST \
         -F "file=@${file}" \
-        "${API_BASE}/repos/${REPO_PATH}/releases/${release_id}/attach_files?access_token=${GITCODE_TOKEN}"
+        "$url")
+    
+    http_code=$(echo "$response" | tail -n1)
+    body=$(echo "$response" | sed '$d')
+    
+    if [ "$http_code" -ge 400 ]; then
+        log_debug "UPLOAD - HTTP $http_code"
+        log_debug "Response: $body"
+        echo "$body"
+        return 1
+    fi
+    
+    echo "$body"
 }
 
 check_token() {
@@ -85,34 +123,28 @@ ensure_repository() {
     echo ""
     log_info "步骤 1/6: 检查仓库 ${REPO_PATH}"
     
-    response=$(api_get "/repos/${REPO_PATH}")
-    
-    if echo "$response" | grep -q '"id"'; then
-        log_success "仓库已存在"
-        return 0
-    fi
-    
-    log_warning "仓库不存在，创建中..."
-    
-    private_val="false"
-    [ "$REPO_PRIVATE" = "true" ] && private_val="true"
-    
-    response=$(api_post "/user/repos" "{
-        \"name\": \"${REPO_NAME}\",
-        \"description\": \"${REPO_DESC}\",
-        \"private\": ${private_val},
-        \"has_issues\": true,
-        \"has_wiki\": true,
-        \"auto_init\": false
-    }")
-    
-    if echo "$response" | grep -q '"id"'; then
+    if ! response=$(api_get "/repos/${REPO_PATH}"); then
+        log_warning "仓库不存在，创建中..."
+        
+        private_val="false"
+        [ "$REPO_PRIVATE" = "true" ] && private_val="true"
+        
+        if ! response=$(api_post "/user/repos" "{
+            \"name\": \"${REPO_NAME}\",
+            \"description\": \"${REPO_DESC}\",
+            \"private\": ${private_val},
+            \"has_issues\": true,
+            \"has_wiki\": true,
+            \"auto_init\": false
+        }"); then
+            log_error "仓库创建失败"
+            exit 1
+        fi
+        
         log_success "仓库创建成功"
         sleep 5
     else
-        log_error "仓库创建失败"
-        echo "$response"
-        exit 1
+        log_success "仓库已存在"
     fi
 }
 
@@ -120,9 +152,7 @@ ensure_branch() {
     echo ""
     log_info "步骤 2/6: 检查分支 ${BRANCH}"
     
-    response=$(api_get "/repos/${REPO_PATH}/branches/${BRANCH}")
-    
-    if echo "$response" | grep -q '"name"'; then
+    if response=$(api_get "/repos/${REPO_PATH}/branches/${BRANCH}"); then
         log_success "分支已存在"
         return 0
     fi
@@ -134,32 +164,64 @@ ensure_branch() {
     git config user.name "GitCode Bot"
     git config user.email "bot@gitcode.com"
     
+    # 确保有文件
     if [ ! -f "README.md" ]; then
-        echo "# ${REPO_NAME}" > README.md
-        echo "" >> README.md
-        echo "${REPO_DESC}" >> README.md
+        cat > README.md <<EOF
+# ${REPO_NAME}
+
+${REPO_DESC}
+
+## 自动创建
+
+创建时间: $(date '+%Y-%m-%d %H:%M:%S')
+EOF
+    fi
+    
+    if [ ! -f ".gitignore" ]; then
+        cat > .gitignore <<EOF
+.DS_Store
+*.log
+node_modules/
+EOF
     fi
     
     git add -A
-    git diff --cached --quiet && git commit --allow-empty -m "Initial commit" || git commit -m "Initial commit"
     
-    if git remote get-url gitcode &>/dev/null; then
-        git remote set-url gitcode "https://${GITCODE_TOKEN}@gitcode.com/${REPO_PATH}.git"
+    if git diff --cached --quiet; then
+        git commit --allow-empty -m "Initial commit"
     else
-        git remote add gitcode "https://${GITCODE_TOKEN}@gitcode.com/${REPO_PATH}.git"
+        git commit -m "Initial commit"
     fi
     
-    git push gitcode HEAD:refs/heads/${BRANCH} 2>&1 | grep -v "${GITCODE_TOKEN}"
+    # 设置远程仓库（使用 oauth2 方式）
+    local git_url="https://oauth2:${GITCODE_TOKEN}@gitcode.com/${REPO_PATH}.git"
     
-    log_success "分支创建成功"
-    sleep 3
+    if git remote get-url gitcode &>/dev/null; then
+        git remote set-url gitcode "$git_url"
+    else
+        git remote add gitcode "$git_url"
+    fi
+    
+    log_info "推送到远程仓库..."
+    
+    # 推送（隐藏 token）
+    if git push gitcode HEAD:refs/heads/${BRANCH} 2>&1 | sed "s/${GITCODE_TOKEN}/***TOKEN***/g"; then
+        log_success "分支创建成功"
+        sleep 3
+    else
+        log_error "分支推送失败"
+        exit 1
+    fi
 }
 
 cleanup_old_tags() {
     echo ""
     log_info "步骤 3/6: 清理旧标签"
     
-    response=$(api_get "/repos/${REPO_PATH}/tags")
+    if ! response=$(api_get "/repos/${REPO_PATH}/tags"); then
+        log_warning "获取标签失败，可能仓库为空"
+        return 0
+    fi
     
     tags=$(echo "$response" | grep -o '"name":"[^"]*"' | cut -d'"' -f4)
     
@@ -168,18 +230,23 @@ cleanup_old_tags() {
         return 0
     fi
     
+    log_info "现有标签: $(echo "$tags" | tr '\n' ' ')"
+    
     deleted=0
     while IFS= read -r tag; do
         [ -z "$tag" ] || [ "$tag" = "$TAG_NAME" ] && continue
         
         log_warning "删除标签: $tag"
         
-        # 获取 release id
-        rel_response=$(api_get "/repos/${REPO_PATH}/releases/tags/${tag}")
-        rel_id=$(echo "$rel_response" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
-        
-        # 删除 release
-        [ -n "$rel_id" ] && api_delete "/repos/${REPO_PATH}/releases/${rel_id}" &>/dev/null
+        # 获取 release
+        if rel_response=$(api_get "/repos/${REPO_PATH}/releases/tags/${tag}"); then
+            rel_id=$(echo "$rel_response" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+            
+            if [ -n "$rel_id" ]; then
+                api_delete "/repos/${REPO_PATH}/releases/${rel_id}" &>/dev/null
+                log_debug "删除 release: $rel_id"
+            fi
+        fi
         
         # 删除标签
         api_delete "/repos/${REPO_PATH}/tags/${tag}" &>/dev/null
@@ -197,22 +264,29 @@ create_release() {
     log_info "标签: ${TAG_NAME}"
     log_info "标题: ${RELEASE_TITLE}"
     
-    response=$(api_post "/repos/${REPO_PATH}/releases" "{
+    # 转义特殊字符
+    body_escaped=$(echo "$RELEASE_BODY" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g')
+    
+    if ! response=$(api_post "/repos/${REPO_PATH}/releases" "{
         \"tag_name\": \"${TAG_NAME}\",
         \"name\": \"${RELEASE_TITLE}\",
-        \"body\": \"${RELEASE_BODY}\",
+        \"body\": \"${body_escaped}\",
         \"target_commitish\": \"${BRANCH}\"
-    }")
-    
-    if echo "$response" | grep -q '"id"'; then
-        RELEASE_ID=$(echo "$response" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
-        log_success "Release 创建成功 (ID: ${RELEASE_ID})"
-        return 0
-    else
+    }"); then
         log_error "Release 创建失败"
-        echo "$response"
         exit 1
     fi
+    
+    # 提取 ID（多种格式兼容）
+    RELEASE_ID=$(echo "$response" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+    
+    if [ -z "$RELEASE_ID" ]; then
+        log_error "无法获取 Release ID"
+        log_debug "响应: $response"
+        exit 1
+    fi
+    
+    log_success "Release 创建成功 (ID: ${RELEASE_ID})"
 }
 
 upload_files() {
@@ -222,6 +296,11 @@ upload_files() {
     if [ -z "$UPLOAD_FILES" ]; then
         log_info "没有文件需要上传"
         return 0
+    fi
+    
+    if [ -z "$RELEASE_ID" ]; then
+        log_error "RELEASE_ID 为空，无法上传文件"
+        return 1
     fi
     
     uploaded=0
@@ -240,13 +319,18 @@ upload_files() {
         fi
         
         size=$(du -h "$file" | cut -f1)
-        log_info "[$(( uploaded + failed + 1 ))/${total}] $file ($size)"
+        filename=$(basename "$file")
+        log_info "[$(( uploaded + failed + 1 ))/${total}] $filename ($size)"
         
-        response=$(api_upload "$file" "$RELEASE_ID")
-        
-        if echo "$response" | grep -q '"name"'; then
-            log_success "上传成功"
-            uploaded=$((uploaded + 1))
+        if response=$(api_upload "$file" "$RELEASE_ID"); then
+            if echo "$response" | grep -q '"name"'; then
+                log_success "上传成功"
+                uploaded=$((uploaded + 1))
+            else
+                log_error "上传失败 - 无效响应"
+                log_debug "响应: $response"
+                failed=$((failed + 1))
+            fi
         else
             log_error "上传失败"
             failed=$((failed + 1))
@@ -260,11 +344,10 @@ verify_release() {
     echo ""
     log_info "步骤 6/6: 验证 Release"
     
-    response=$(api_get "/repos/${REPO_PATH}/releases/tags/${TAG_NAME}")
-    
-    if echo "$response" | grep -q '"tag_name"'; then
+    if response=$(api_get "/repos/${REPO_PATH}/releases/tags/${TAG_NAME}"); then
         log_success "验证成功"
-        log_info "地址: https://gitcode.com/${REPO_PATH}/releases/tag/${TAG_NAME}"
+        log_info "Release ID: ${RELEASE_ID}"
+        log_info "访问地址: https://gitcode.com/${REPO_PATH}/releases/tag/${TAG_NAME}"
     else
         log_error "验证失败"
         exit 1
