@@ -473,7 +473,7 @@ verify_release() {
 }
 
 main() {
-    echo "  GitCode Release 发布脚本"
+    echo "${PLATFORM_TAG} Release 发布脚本"
     echo "仓库: ${REPO_PATH}"
     echo "标签: ${TAG_NAME}"
     
