@@ -4,101 +4,220 @@ on:
   workflow_dispatch:
     inputs:
       platform:
-        description: '选择发布平台'
-        required: true
+        description: '测试平台'
         type: choice
         options:
-          - GitCode
-          - Gitee
-        default: 'GitCode'
+          - 'Both (Parallel)'
+          - 'GitCode'
+          - 'Gitee'
+        default: 'Both (Parallel)'
       
       tag_name:
         description: '版本标签'
-        required: true
-        default: 'v1.0.0'
+        default: 'v1.0.0-test'
       
       repo_name:
         description: '仓库名称'
-        required: true
         default: 'test-release'
-      
-      username:
-        description: '用户名（留空使用默认）'
-        required: false
-        default: 'whzhni'
 
 jobs:
-  release:
+  # ========================================
+  # 测试版本管理器
+  # ========================================
+  test-version-manager:
     runs-on: ubuntu-latest
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
+      
+      - name: 测试 version-manager.sh
+        run: |
+          chmod +x .github/workflows/scripts/version-manager.sh
+          export VERSION_FILE="${RUNNER_TEMP}/test-version.txt"
+          
+          echo "1. 测试写入"
+          .github/workflows/scripts/version-manager.sh write openlist2 v4.1.7
+          cat $VERSION_FILE
+          
+          echo "2. 测试读取"
+          VERSION=$(.github/workflows/scripts/version-manager.sh read openlist2)
+          [ "$VERSION" = "v4.1.7" ] && echo "✅ 读取成功: $VERSION" || exit 1
+          
+          echo "3. 测试更新"
+          .github/workflows/scripts/version-manager.sh write openlist2 v4.1.8
+          VERSION=$(.github/workflows/scripts/version-manager.sh read openlist2)
+          [ "$VERSION" = "v4.1.8" ] && echo "✅ 更新成功: $VERSION" || exit 1
+          
+          echo "4. 测试多项目"
+          .github/workflows/scripts/version-manager.sh write tailscale v1.58.0
+          .github/workflows/scripts/version-manager.sh list
+          
+          echo "5. 测试检查"
+          .github/workflows/scripts/version-manager.sh check openlist2 && echo "✅ 存在检查通过"
+          ! .github/workflows/scripts/version-manager.sh check notexist && echo "✅ 不存在检查通过"
+          
+          echo "✅ version-manager.sh 测试完成"
 
+  # ========================================
+  # 准备测试文件
+  # ========================================
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
       - name: 生成测试文件
         run: |
           mkdir -p files
-          echo "# Test Release for ${{ inputs.platform }}" > files/README.md
-          echo "Version: ${{ inputs.tag_name }}" > files/version.txt
-          echo "Platform: ${{ inputs.platform }}" > files/platform.txt
-          date > files/build-time.txt
+          echo "# Test" > files/README.md
+          echo "${{ inputs.tag_name }}" > files/version.txt
+          echo "$(date)" > files/build-time.txt
+          ls -lh files/
 
-      - name: 显示配置信息
-        run: |
-          echo "==================== 发布配置 ===================="
-          echo "平台: ${{ inputs.platform }}"
-          echo "标签: ${{ inputs.tag_name }}"
-          echo "仓库: ${{ inputs.repo_name }}"
-          echo "用户: ${{ inputs.username || '(使用默认)' }}"
-          echo "================================================="
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-files
+          path: files/
+          retention-days: 1
 
-      - name: 🚀 发布到 GitCode
-        if: inputs.platform == 'GitCode'
-        env:
-          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
-          USERNAME: ${{ inputs.username || 'whzhni' }}
-          REPO_NAME: ${{ inputs.repo_name }}
-          TAG_NAME: ${{ inputs.tag_name }}
-          RELEASE_TITLE: "Release ${{ inputs.tag_name }}"
-          RELEASE_BODY: |
-            ## 📦 自动发布测试
-            
-            - 版本: ${{ inputs.tag_name }}
-            - 平台: GitCode
-            - 构建时间: ${{ github.event.repository.updated_at }}
-            - 触发者: @${{ github.actor }}
-          UPLOAD_FILES: "files/README.md files/version.txt files/platform.txt files/build-time.txt"
+  # ========================================
+  # 并行发布测试
+  # ========================================
+  test-parallel:
+    runs-on: ubuntu-latest
+    needs: prepare
+    if: inputs.platform == 'Both (Parallel)'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: 配置脚本
         run: |
           chmod +x .github/workflows/scripts/release-GitCode.sh
-          .github/workflows/scripts/release-GitCode.sh
-
-      - name: 🚀 发布到 Gitee
-        if: inputs.platform == 'Gitee'
-        env:
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-          USERNAME: ${{ inputs.username || secrets.GITEE_USERNAME }}
-          REPO_NAME: ${{ inputs.repo_name }}
-          TAG_NAME: ${{ inputs.tag_name }}
-          RELEASE_TITLE: "Release ${{ inputs.tag_name }}"
-          RELEASE_BODY: |
-            ## 📦 自动发布测试
-            
-            - 版本: ${{ inputs.tag_name }}
-            - 平台: Gitee
-            - 构建时间: ${{ github.event.repository.updated_at }}
-            - 触发者: @${{ github.actor }}
-          UPLOAD_FILES: "files/README.md files/version.txt files/platform.txt files/build-time.txt"
-        run: |
           chmod +x .github/workflows/scripts/release-gitee.sh
-          .github/workflows/scripts/release-gitee.sh
 
-      - name: ✅ 发布完成
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-files
+          path: ${{ runner.temp }}/files
+
+      - name: 并行发布
+        env:
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITCODE_USER: ${{ secrets.GITCODE_USERNAME || 'whzhni' }}
+          GITEE_USER: ${{ secrets.GITEE_USERNAME || 'whzhni' }}
         run: |
-          echo "::notice::🎉 成功发布到 ${{ inputs.platform }}"
+          FILES=$(find ${{ runner.temp }}/files -type f | tr '\n' ' ')
+          START=$(date +%s)
+          
+          # GitCode
+          (
+            GITCODE_TOKEN="$GITCODE_TOKEN" \
+            USERNAME="$GITCODE_USER" \
+            REPO_NAME="${{ inputs.repo_name }}" \
+            TAG_NAME="${{ inputs.tag_name }}" \
+            RELEASE_TITLE="Test ${{ inputs.tag_name }}" \
+            RELEASE_BODY="GitCode 并行测试" \
+            UPLOAD_FILES="$FILES" \
+            RUNNER_TEMP="${{ runner.temp }}" \
+            .github/workflows/scripts/release-GitCode.sh
+          ) &
+          PID1=$!
+          
+          # Gitee
+          (
+            GITEE_TOKEN="$GITEE_TOKEN" \
+            USERNAME="$GITEE_USER" \
+            REPO_NAME="${{ inputs.repo_name }}" \
+            TAG_NAME="${{ inputs.tag_name }}" \
+            RELEASE_TITLE="Test ${{ inputs.tag_name }}" \
+            RELEASE_BODY="Gitee 并行测试" \
+            UPLOAD_FILES="$FILES" \
+            RUNNER_TEMP="${{ runner.temp }}" \
+            .github/workflows/scripts/release-gitee.sh
+          ) &
+          PID2=$!
+          
+          wait $PID1
+          STATUS1=$?
+          wait $PID2
+          STATUS2=$?
+          
+          ELAPSED=$(($(date +%s) - START))
+          
+          echo "耗时: ${ELAPSED}s"
+          echo "GitCode: $([ $STATUS1 -eq 0 ] && echo '✅' || echo '❌')"
+          echo "Gitee: $([ $STATUS2 -eq 0 ] && echo '✅' || echo '❌')"
+          
+          [ $STATUS1 -eq 0 ] && [ $STATUS2 -eq 0 ] || exit 1
+
+  # ========================================
+  # 单独发布测试
+  # ========================================
+  test-single:
+    runs-on: ubuntu-latest
+    needs: prepare
+    if: inputs.platform != 'Both (Parallel)'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: 配置脚本
+        run: |
+          chmod +x .github/workflows/scripts/release-GitCode.sh
+          chmod +x .github/workflows/scripts/release-gitee.sh
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-files
+          path: ${{ runner.temp }}/files
+
+      - name: 发布到 ${{ inputs.platform }}
+        env:
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          FILES=$(find ${{ runner.temp }}/files -type f | tr '\n' ' ')
           
           if [ "${{ inputs.platform }}" = "GitCode" ]; then
-            echo "::notice::🔗 https://gitcode.com/${{ inputs.username || 'whzhni' }}/${{ inputs.repo_name }}/releases"
+            GITCODE_TOKEN="$GITCODE_TOKEN" \
+            USERNAME="${{ secrets.GITCODE_USERNAME || 'whzhni' }}" \
+            REPO_NAME="${{ inputs.repo_name }}" \
+            TAG_NAME="${{ inputs.tag_name }}" \
+            RELEASE_TITLE="Test ${{ inputs.tag_name }}" \
+            RELEASE_BODY="GitCode 测试" \
+            UPLOAD_FILES="$FILES" \
+            .github/workflows/scripts/release-GitCode.sh
           else
-            echo "::notice::🔗 https://gitee.com/${{ inputs.username || secrets.GITEE_USERNAME }}/${{ inputs.repo_name }}/releases"
+            GITEE_TOKEN="$GITEE_TOKEN" \
+            USERNAME="${{ secrets.GITEE_USERNAME || 'whzhni' }}" \
+            REPO_NAME="${{ inputs.repo_name }}" \
+            TAG_NAME="${{ inputs.tag_name }}" \
+            RELEASE_TITLE="Test ${{ inputs.tag_name }}" \
+            RELEASE_BODY="Gitee 测试" \
+            UPLOAD_FILES="$FILES" \
+            .github/workflows/scripts/release-gitee.sh
           fi
+
+  # ========================================
+  # 报告
+  # ========================================
+  report:
+    runs-on: ubuntu-latest
+    needs: [test-version-manager, test-parallel, test-single]
+    if: always()
+    
+    steps:
+      - name: 生成报告
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## 🧪 测试报告
+          
+          **平台**: ${{ inputs.platform }}  
+          **版本**: ${{ inputs.tag_name }}
+          
+          | 测试项 | 结果 |
+          |--------|------|
+          | 版本管理器 | ${{ needs.test-version-manager.result == 'success' && '✅' || '❌' }} |
+          | 发布测试 | ${{ (needs.test-parallel.result == 'success' || needs.test-single.result == 'success') && '✅' || '❌' }} |
+          EOF
+          
+          echo "::notice::测试完成"
