@@ -337,79 +337,74 @@ jobs:
         TAG_NAME: ${{ matrix.project.version }}
         RELEASE_TITLE: "${{ matrix.project.local_name }} ${{ matrix.project.version }}"
       run: |
-         # 动态生成构建时间
-         BUILD_TIME=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')
+        BUILD_TIME=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')
     
-         # 生成 Release Body
-         RELEASE_BODY="## 📦 ${{ matrix.project.local_name }} ${{ matrix.project.version }}
+        RELEASE_BODY="## 📦 ${{ matrix.project.local_name }} ${{ matrix.project.version }}
 
-         ### 📌 项目信息
-         - 项目名称: ${{ matrix.project.github_repo }}
-         - 项目版本: ${{ matrix.project.version }}
-         - 上游仓库: https://github.com/${{ matrix.project.github_owner }}/${{ matrix.project.github_repo }}
-         - 上游地址: https://github.com/${{ matrix.project.github_owner }}/${{ matrix.project.github_repo }}/releases/tag/${{ matrix.project.version }}
+        ### 📌 项目信息
+        - 项目名称: ${{ matrix.project.github_repo }}
+        - 项目版本: ${{ matrix.project.version }}
+        - 上游仓库: https://github.com/${{ matrix.project.github_owner }}/${{ matrix.project.github_repo }}
+        - 上游地址: https://github.com/${{ matrix.project.github_owner }}/${{ matrix.project.github_repo }}/releases/tag/${{ matrix.project.version }}
 
-         ### 🔨 构建信息
-         - 构建时间: ${BUILD_TIME} (北京时间)
-         - 工作流运行: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-         - SDK 版本: OpenWrt 24.10 + SNAPSHOT"
+        ### 🔨 构建信息
+        - 构建时间: ${BUILD_TIME} (北京时间)
+        - 工作流运行: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        - 架构数量: 33 个
+        - SDK 版本: OpenWrt 24.10 + SNAPSHOT"
     
-         # 生成文件列表
-         UPLOAD_FILES=$(find "$RELEASE_DIR" -type f \( -name "*.ipk" -o -name "*.apk" \) | tr '\n' ' ')
-
-         echo "准备并行发布"
+        UPLOAD_FILES=$(find "$RELEASE_DIR" -type f \( -name "*.ipk" -o -name "*.apk" \) | tr '\n' ' ')
     
-         echo "文件数量: $(echo $UPLOAD_FILES | wc -w)"
-         echo "构建时间: $BUILD_TIME"
-         echo ""
-           echo "🚀 发布到 GitCode"
+        echo "准备并行发布"
+        echo "文件数量: $(echo $UPLOAD_FILES | wc -w)"
+        echo "构建时间: $BUILD_TIME"
+        echo ""
+    
+        (
+          echo "🚀 发布到 GitCode"
       
-           GITCODE_TOKEN="$GITCODE_TOKEN" \
-           USERNAME="$GITCODE_USERNAME" \
-           REPO_NAME="$REPO_NAME" \
-           TAG_NAME="$TAG_NAME" \
-           RELEASE_TITLE="$RELEASE_TITLE" \
-           RELEASE_BODY="$RELEASE_BODY" \
-           UPLOAD_FILES="$UPLOAD_FILES" \
-           RUNNER_TEMP="${RUNNER_TEMP}" \
-           .github/workflows/scripts/release-GitCode.sh
+          GITCODE_TOKEN="$GITCODE_TOKEN" \
+          USERNAME="$GITCODE_USERNAME" \
+          REPO_NAME="$REPO_NAME" \
+          TAG_NAME="$TAG_NAME" \
+          RELEASE_TITLE="$RELEASE_TITLE" \
+          RELEASE_BODY="$RELEASE_BODY" \
+          UPLOAD_FILES="$UPLOAD_FILES" \
+          RUNNER_TEMP="${RUNNER_TEMP}" \
+          .github/workflows/scripts/release-GitCode.sh
+        ) &
+        GITCODE_PID=$!
+    
+        (
+          echo "🚀 发布到 Gitee"
       
-           exit $?
-         ) &
-         GITCODE_PID=$!
-         (
-           echo "🚀 发布到 Gitee"
-
-           GITEE_TOKEN="$GITEE_TOKEN" \
-           USERNAME="$GITEE_USERNAME" \
-           REPO_NAME="$REPO_NAME" \
-           TAG_NAME="$TAG_NAME" \
-           RELEASE_TITLE="$RELEASE_TITLE" \
-           RELEASE_BODY="$RELEASE_BODY" \
-           UPLOAD_FILES="$UPLOAD_FILES" \
-           RUNNER_TEMP="${RUNNER_TEMP}" \
-           .github/workflows/scripts/release-gitee.sh
-      
-           exit $?
-         ) &
-         GITEE_PID=$!
+          GITEE_TOKEN="$GITEE_TOKEN" \
+          USERNAME="$GITEE_USERNAME" \
+          REPO_NAME="$REPO_NAME" \
+          TAG_NAME="$TAG_NAME" \
+          RELEASE_TITLE="$RELEASE_TITLE" \
+          RELEASE_BODY="$RELEASE_BODY" \
+          UPLOAD_FILES="$UPLOAD_FILES" \
+          RUNNER_TEMP="${RUNNER_TEMP}" \
+          .github/workflows/scripts/release-gitee.sh
+        ) &
+        GITEE_PID=$!
     
-         # 等待两个任务完成
-         wait $GITCODE_PID
-         GITCODE_STATUS=$?
-         wait $GITEE_PID
-         GITEE_STATUS=$?
-         echo ""
+        wait $GITCODE_PID
+        GITCODE_STATUS=$?
     
-         echo "📊 并行发布结果"
+        wait $GITEE_PID
+        GITEE_STATUS=$?
     
-         echo "GitCode: $([ $GITCODE_STATUS -eq 0 ] && echo '✅ 成功' || echo '❌ 失败')"
-         echo "Gitee:   $([ $GITEE_STATUS -eq 0 ] && echo '✅ 成功' || echo '❌ 失败')"
-
-         if [ $GITCODE_STATUS -ne 0 ] && [ $GITEE_STATUS -ne 0 ]; then
-           echo "::error::两个平台都发布失败"
-           exit 1
-         fi
+        echo ""
+        echo "📊 并行发布结果"
+        echo "GitCode: $([ $GITCODE_STATUS -eq 0 ] && echo '✅ 成功' || echo '❌ 失败')"
+        echo "Gitee:   $([ $GITEE_STATUS -eq 0 ] && echo '✅ 成功' || echo '❌ 失败')"
+ 
+        if [ $GITCODE_STATUS -ne 0 ] && [ $GITEE_STATUS -ne 0 ]; then
+          echo "::error::两个平台都发布失败"
+          exit 1
+        fi
 
     - name: 更新版本记录到 version.txt
       run: |
