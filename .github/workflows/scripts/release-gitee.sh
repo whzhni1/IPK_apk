@@ -105,16 +105,17 @@ ${REPO_DESC}
 create_initial_commit_with_git() {
     log_debug "使用 Git 创建初始提交..."
     
-    # 创建临时目录
-    local temp_dir=$(mktemp -d)
+    # 🔧 使用独立的临时目录
+    local temp_dir="${RUNNER_TEMP:-/tmp}/gitee-init-$$-${RANDOM}"
+    mkdir -p "$temp_dir"
+    
+    local current_dir=$(pwd)
     cd "$temp_dir"
     
-    # 初始化 Git
     git init -q
     git config user.name "Gitee Bot"
     git config user.email "bot@gitee.com"
     
-    # 创建 README
     cat > README.md << EOF
 # ${REPO_NAME}
 
@@ -123,28 +124,22 @@ ${REPO_DESC}
 ## 📦 Release
 
 本仓库用于自动发布构建产物。
-
-## 🔗 链接
-
-- Gitee: https://gitee.com/${REPO_PATH}
 EOF
     
-    # 提交
     git add README.md
     git commit -m "Initial commit" -q
     
-    # 推送
     local git_url="https://oauth2:${GITEE_TOKEN}@gitee.com/${REPO_PATH}.git"
     git remote add origin "$git_url"
     
     if git push -u origin master 2>&1 | sed "s/${GITEE_TOKEN}/***TOKEN***/g"; then
         log_success "初始提交成功"
-        cd - > /dev/null
+        cd "$current_dir"
         rm -rf "$temp_dir"
         return 0
     else
         log_error "初始提交失败"
-        cd - > /dev/null
+        cd "$current_dir"
         rm -rf "$temp_dir"
         return 1
     fi
@@ -265,14 +260,25 @@ cleanup_old_tags() {
     echo ""
     log_info "步骤 3/5: 清理旧标签和 Release"
     
-    # 检查 Git 是否可用
     if ! command -v git &> /dev/null; then
         log_warning "未找到 git 命令，跳过标签清理"
         return 0
     fi
     
     local deleted_count=0
+    
+    # 🔧 使用独立的临时目录
+    local temp_git_dir="${RUNNER_TEMP:-/tmp}/gitee-cleanup-$$-${RANDOM}"
+    mkdir -p "$temp_git_dir"
+    local current_dir=$(pwd)
+    
+    cd "$temp_git_dir"
+    git init -q
+    git config user.name "Gitee Bot"
+    git config user.email "bot@gitee.com"
+    
     local git_url="https://oauth2:${GITEE_TOKEN}@gitee.com/${REPO_PATH}.git"
+    git remote add origin "$git_url"
     
     # 获取所有标签
     log_debug "获取标签列表..."
@@ -280,6 +286,8 @@ cleanup_old_tags() {
     
     if ! echo "$tags_response" | jq -e '.[0]' > /dev/null 2>&1; then
         log_info "没有旧标签"
+        cd "$current_dir"
+        rm -rf "$temp_git_dir"
         return 0
     fi
     
@@ -287,6 +295,8 @@ cleanup_old_tags() {
     
     if [ -z "$tags" ]; then
         log_info "没有旧标签"
+        cd "$current_dir"
+        rm -rf "$temp_git_dir"
         return 0
     fi
     
@@ -294,7 +304,6 @@ cleanup_old_tags() {
     while IFS= read -r tag; do
         [ -z "$tag" ] || [ "$tag" = "$TAG_NAME" ] && continue
         
-        # 只删除版本号格式的标签
         if ! echo "$tag" | grep -qE '^(v[0-9]|[0-9])'; then
             continue
         fi
@@ -312,10 +321,10 @@ cleanup_old_tags() {
             sleep 1
         fi
         
-        # 2. 使用 Git Push 删除标签
+        # 2. 删除 Git 标签
         log_debug "  删除 Git 标签..."
         
-        local output=$(git push "$git_url" ":refs/tags/${tag}" 2>&1 | sed "s/${GITEE_TOKEN}/***TOKEN***/g")
+        local output=$(git push origin ":refs/tags/${tag}" 2>&1 | sed "s/${GITEE_TOKEN}/***TOKEN***/g")
         
         if [ $? -eq 0 ]; then
             log_success "  ✓ 已删除"
@@ -331,6 +340,10 @@ cleanup_old_tags() {
         
         sleep 1
     done <<< "$tags"
+    
+    # 🔧 返回原目录并清理
+    cd "$current_dir"
+    rm -rf "$temp_git_dir"
     
     echo ""
     [ $deleted_count -gt 0 ] && log_success "已清理 $deleted_count 个旧版本" || log_info "没有需要清理的版本"
