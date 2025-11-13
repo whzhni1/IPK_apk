@@ -493,9 +493,6 @@ set_public_repo() {
             "private": false
         }')
 
-    # 打印返回结果以便调试
-    log_debug "响应: $update_response"
-
     if echo "$update_response" | jq -e '.private' | grep -q "false"; then
         log_success "仓库已修改为公开"
     else
