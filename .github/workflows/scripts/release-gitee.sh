@@ -197,10 +197,7 @@ ensure_repository() {
     
     log_warning "仓库不存在，创建中..."
     
-    local private_val="false"
-    [ "$REPO_PRIVATE" = "true" ] && private_val="true"
-    
-    # 创建空仓库
+    # 创建空仓库（强制公开）
     response=$(api_post "/user/repos" "{
         \"name\":\"${REPO_NAME}\",
         \"description\":\"${REPO_DESC}\",
@@ -211,10 +208,29 @@ ensure_repository() {
     }")
     
     if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
-        log_success "仓库创建成功"
+        # 检查仓库是否真的是公开的
+        local is_private=$(echo "$response" | jq -r '.private // false')
+        if [ "$is_private" = "true" ]; then
+            log_warning "仓库创建为私有，尝试修改为公开..."
+            
+            # 使用 PATCH 修改为公开
+            local update_response=$(curl -s -X PATCH \
+                "${API_BASE}/repos/${REPO_PATH}?access_token=${GITEE_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d "{\"private\":false}")
+            
+            if echo "$update_response" | jq -e '.private' | grep -q "false"; then
+                log_success "仓库已修改为公开"
+            else
+                log_warning "无法修改为公开仓库，可能需要手动设置"
+            fi
+        else
+            log_success "仓库创建成功 (公开)"
+        fi
+        
         sleep 3
         
-        # 直接在 main 分支初始化
+        # 初始化仓库
         log_info "初始化仓库到分支: ${BRANCH}"
         
         local temp_dir="${RUNNER_TEMP:-/tmp}/gitee-init-$$-${RANDOM}"
@@ -243,7 +259,6 @@ EOF
         local git_url="https://oauth2:${GITEE_TOKEN}@gitee.com/${REPO_PATH}.git"
         git remote add origin "$git_url"
         
-        # 推送到目标分支（第一次推送会成为默认分支）
         if git push -u origin HEAD:"${BRANCH}" 2>&1 | sed "s/${GITEE_TOKEN}/***TOKEN***/g"; then
             log_success "仓库初始化完成 (分支: ${BRANCH})"
             cd "$current_dir"
