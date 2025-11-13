@@ -246,11 +246,38 @@ ensure_branch() {
     local response=$(api_get "/repos/${REPO_PATH}/branches/${BRANCH}")
     
     if echo "$response" | jq -e '.name' > /dev/null 2>&1; then
-        log_success "分支已存在"
+        log_success "分支 ${BRANCH} 已存在"
         return 0
     fi
-
-    log_warning "分支检查完成"
+    
+    log_warning "分支 ${BRANCH} 不存在，创建中..."
+    
+    # 使用 Git 创建分支
+    local temp_dir="${RUNNER_TEMP:-/tmp}/gitee-branch-$$-${RANDOM}"
+    mkdir -p "$temp_dir"
+    
+    local current_dir=$(pwd)
+    cd "$temp_dir"
+    
+    local git_url="https://oauth2:${GITEE_TOKEN}@gitee.com/${REPO_PATH}.git"
+    
+    if git clone "$git_url" . 2>&1 | sed "s/${GITEE_TOKEN}/***TOKEN***/g" >/dev/null; then
+        # 创建并推送新分支
+        git checkout -b "${BRANCH}" >/dev/null 2>&1
+        
+        if git push -u origin "${BRANCH}" 2>&1 | sed "s/${GITEE_TOKEN}/***TOKEN***/g" >/dev/null; then
+            log_success "分支 ${BRANCH} 创建成功"
+            cd "$current_dir"
+            rm -rf "$temp_dir"
+            return 0
+        fi
+    fi
+    
+    cd "$current_dir"
+    rm -rf "$temp_dir"
+    
+    log_error "分支创建失败"
+    exit 1
 }
 
 cleanup_old_tags() {
