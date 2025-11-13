@@ -200,37 +200,29 @@ ensure_repository() {
     local private_val="false"
     [ "$REPO_PRIVATE" = "true" ] && private_val="true"
     
-    # 手动创建文件
     response=$(api_post "/user/repos" "{
         \"name\":\"${REPO_NAME}\",
         \"description\":\"${REPO_DESC}\",
         \"private\":${private_val},
         \"has_issues\":true,
         \"has_wiki\":true,
-        \"auto_init\":false
+        \"auto_init\":false,
+        \"default_branch\":\"${BRANCH}\"
     }")
     
     if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
-        log_success "仓库创建成功"
-        
-        # 等待仓库创建完成
+        log_success "仓库创建成功 (默认分支: ${BRANCH})"
         sleep 3
         
-        # 新增：创建初始文件
         log_info "初始化仓库..."
-        
-        # 优先使用 API 创建文件
         if ! create_initial_file; then
-            # API 失败则使用 Git
             if ! create_initial_commit_with_git; then
                 log_error "仓库初始化失败"
                 exit 1
             fi
         fi
         
-        # 等待文件创建完成
         sleep 2
-        
         log_success "仓库初始化完成"
     else
         log_error "仓库创建失败"
@@ -250,34 +242,8 @@ ensure_branch() {
         return 0
     fi
     
-    log_warning "分支 ${BRANCH} 不存在，创建中..."
-    
-    # 使用 Git 创建分支
-    local temp_dir="${RUNNER_TEMP:-/tmp}/gitee-branch-$$-${RANDOM}"
-    mkdir -p "$temp_dir"
-    
-    local current_dir=$(pwd)
-    cd "$temp_dir"
-    
-    local git_url="https://oauth2:${GITEE_TOKEN}@gitee.com/${REPO_PATH}.git"
-    
-    if git clone "$git_url" . 2>&1 | sed "s/${GITEE_TOKEN}/***TOKEN***/g" >/dev/null; then
-        # 创建并推送新分支
-        git checkout -b "${BRANCH}" >/dev/null 2>&1
-        
-        if git push -u origin "${BRANCH}" 2>&1 | sed "s/${GITEE_TOKEN}/***TOKEN***/g" >/dev/null; then
-            log_success "分支 ${BRANCH} 创建成功"
-            cd "$current_dir"
-            rm -rf "$temp_dir"
-            return 0
-        fi
-    fi
-    
-    cd "$current_dir"
-    rm -rf "$temp_dir"
-    
-    log_error "分支创建失败"
-    exit 1
+    log_error "分支 ${BRANCH} 不存在"
+    return 0
 }
 
 cleanup_old_tags() {
