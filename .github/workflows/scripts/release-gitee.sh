@@ -252,16 +252,6 @@ EOF
         cd "$current_dir"
         rm -rf "$temp_dir"
 
-        # 设置为公开仓库
-        local update_response=$(curl -s -X PATCH \
-            "https://gitee.com/api/v5/repos/${REPO_PATH}?access_token=${GITEE_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "{\"private\":false}")
-
-        if echo "$update_response" | jq -e '.private' | grep -q "false"; then
-            log_success "仓库已修改为公开"
-        fi
-
     else
         log_error "仓库创建失败"
         log_debug "响应: $response"
@@ -502,7 +492,16 @@ main() {
     create_release
     upload_files
     verify_release
-    
+    # 设置为公开仓库
+    local update_response=$(curl -s -X PATCH \
+       "https://gitee.com/api/v5/repos/${REPO_PATH}?access_token=${GITEE_TOKEN}" \
+       -H "Content-Type: application/json" \
+       -d "{\"private\":false}")
+
+    if echo "$update_response" | jq -e '.private' | grep -q "false"; then
+        log_success "仓库已修改为公开"
+    fi
+
     log_success "🎉 发布完成"
     echo "Release 地址:"
     echo "  https://gitee.com/${REPO_PATH}/releases/tag/${TAG_NAME}"
