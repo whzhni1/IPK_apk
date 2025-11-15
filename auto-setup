@@ -1,0 +1,478 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=01
+
+# 脚本配置
+PACKAGES="luci-app-wechatpush luci-app-passwall2 luci-app-openlist luci-app-filemanager luci-i18n-package-manager-zh-cn luci-i18n-firewall-zh-cn vsftpd openssh-sftp-server luci-app-ttyd lucky luci-app-tailscale luci-theme-aurora"
+UPDATE_PATH="/usr/bin/auto-update.sh"
+
+# 运行时变量
+LOG_FILE="/tmp/auto-setup-$(date +%Y%m%d-%H%M%S).log"
+USER_AGENT="Mozilla/5.0 (compatible; OpenWrt-AutoSetup/2.0)"
+EMPTY_VARS="SYS_ARCH ARCH_FALLBACK PKG_EXT PKG_INSTALL PKG_UPDATE PENDING_PACKAGES FAILED_PACKAGES INSTALLED_PACKAGES CRON_TIME INSTALL_PRIORITY GITEE_TOKEN GITCODE_TOKEN THIRD_PARTY_INSTALLED_LIST API_SOURCES SCRIPT_URLS"
+
+for var in $EMPTY_VARS; do eval "$var=''"; done
+
+# 日志函数
+log() {
+    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+    echo "$msg" | tee -a "$LOG_FILE"
+    logger -t "auto-setup" "$1" 2>/dev/null || true
+}
+
+# 从 auto-setup-fetch 读取配置
+read_fetch_config() {
+    local fetch_script="/etc/init.d/auto-setup-fetch"
+    
+    if [ ! -f "$fetch_script" ]; then
+        log "⚠ 引导脚本不存在: $fetch_script，使用默认配置"
+        return 1
+    fi
+    
+    log "读取引导脚本配置..."
+    
+    CRON_TIME=$(grep '^CRON_TIME=' "$fetch_script" | head -1 | cut -d'"' -f2)
+    INSTALL_PRIORITY=$(grep '^INSTALL_PRIORITY=' "$fetch_script" | head -1 | cut -d'=' -f2 | tr -d ' ')
+    GITEE_TOKEN=$(grep '^GITEE_TOKEN=' "$fetch_script" | head -1 | cut -d'"' -f2)
+    GITCODE_TOKEN=$(grep '^GITCODE_TOKEN=' "$fetch_script" | head -1 | cut -d'"' -f2)
+    
+    local fetch_packages=$(grep '^PACKAGES=' "$fetch_script" | head -1 | cut -d'"' -f2)
+    [ -n "$fetch_packages" ] && PACKAGES="$fetch_packages"
+    
+    SCRIPT_URLS=$(sed -n '/^SCRIPT_URLS="/,/"$/p' "$fetch_script" | grep -v '^SCRIPT_URLS=' | grep -v '^"$' | grep 'http' | xargs)
+    
+    log "✓ 配置读取完成"
+    log "  CRON_TIME: ${CRON_TIME:-未设置}"
+    log "  INSTALL_PRIORITY: ${INSTALL_PRIORITY:-1}"
+    log "  包数量: $(echo $PACKAGES | wc -w) 个"
+    
+    return 0
+}
+
+# 转换 SCRIPT_URLS 为 API_SOURCES 格式
+convert_urls_to_sources() {
+    log "转换源地址格式..."
+    
+    API_SOURCES=""
+    for url in $SCRIPT_URLS; do
+        local platform="" repo="" branch=""
+        
+        case "$url" in
+            *gitcode.com*)
+                platform="gitcode"
+                repo=$(echo "$url" | sed 's|https\?://[^/]*/||' | sed 's|/raw/.*||')
+                branch=$(echo "$url" | sed 's|.*/raw/||' | sed 's|/.*||')
+                ;;
+            *gitee.com*)
+                platform="gitee"
+                repo=$(echo "$url" | sed 's|https\?://[^/]*/||' | sed 's|/raw/.*||')
+                branch=$(echo "$url" | sed 's|.*/raw/||' | sed 's|/.*||')
+                ;;
+            *)
+                continue
+                ;;
+        esac
+        
+        [ -n "$platform" ] && [ -n "$repo" ] && [ -n "$branch" ] && \
+            API_SOURCES="$API_SOURCES ${platform}|${repo}|${branch}"
+    done
+    
+    API_SOURCES=$(echo "$API_SOURCES" | xargs)
+    
+    if [ -z "$API_SOURCES" ]; then
+        log "⚠ 未能从 SCRIPT_URLS 转换有效源，SCRIPT_URLS: $SCRIPT_URLS"
+        API_SOURCES="gitee|whzhni/ipk_apk|main gitcode|whzhni/ipk_apk|main"
+        log "  使用默认配置: $API_SOURCES"
+    fi
+    
+    log "✓ API源: $(echo $API_SOURCES | wc -w) 个"
+}
+
+# 生成基础配置文件
+generate_config() {
+    cat > /etc/auto-setup.conf <<EOF
+# OpenWrt 自动配置文件
+# 生成时间: $(date '+%Y-%m-%d %H:%M:%S')
+
+CRON_TIME="${CRON_TIME}"
+INSTALL_PRIORITY="${INSTALL_PRIORITY:-1}"
+GITEE_TOKEN="${GITEE_TOKEN}"
+GITCODE_TOKEN="${GITCODE_TOKEN}"
+API_SOURCES="${API_SOURCES}"
+EOF
+    log "✓ 配置文件已生成"
+}
+
+# 检测包管理器类型
+detect_package_manager() {
+    if which opkg >/dev/null 2>&1; then
+        PKG_EXT=".ipk"
+        PKG_INSTALL="opkg install"
+        PKG_UPDATE="opkg update"
+    elif which apk >/dev/null 2>&1; then
+        PKG_EXT=".apk"
+        PKG_INSTALL="apk add --allow-untrusted"
+        PKG_UPDATE="apk update"
+    else
+        log "✗ 未找到包管理器 (opkg 和 apk 均不可用)"
+        return 1
+    fi
+    log "包管理器: $(echo $PKG_INSTALL | awk '{print $1}'), 格式: $PKG_EXT"
+}
+
+# 检测架构优先级列表
+detect_arch_priority() {
+    local arch_list=""
+    
+    if which opkg >/dev/null 2>&1; then
+        arch_list=$(opkg print-architecture 2>/dev/null | \
+            awk '!/^arch (all|noarch)/ {print $2}')
+        
+    elif which apk >/dev/null 2>&1; then
+        local base_arch=$(apk --print-arch 2>/dev/null)
+        
+        case "$base_arch" in
+            aarch64)
+                if grep -qi "cortex-a53" /proc/cpuinfo; then
+                    arch_list="aarch64_cortex-a53 aarch64-cortex-a53"
+                elif grep -qi "cortex-a72" /proc/cpuinfo; then
+                    arch_list="aarch64_cortex-a72 aarch64-cortex-a72"
+                elif grep -qi "cortex-a76" /proc/cpuinfo; then
+                    arch_list="aarch64_cortex-a76 aarch64-cortex-a76"
+                fi
+                arch_list="$arch_list aarch64_generic aarch64 arm64"
+                ;;
+            armv7|armhf)
+                arch_list="armv7 arm_cortex-a9 arm_cortex-a7 armhf"
+                ;;
+            x86_64)
+                arch_list="x86_64 x86-64 amd64"
+                ;;
+            *)
+                arch_list="$base_arch"
+                ;;
+        esac
+        
+    else
+        local cpu_arch=$(uname -m)
+        case "$cpu_arch" in
+            aarch64)
+                local cpu_part=$(awk '/CPU part/ {print $4; exit}' /proc/cpuinfo)
+                case "$cpu_part" in
+                    0xd03) arch_list="aarch64_cortex-a53 aarch64-cortex-a53" ;;
+                    0xd08) arch_list="aarch64_cortex-a72 aarch64-cortex-a72" ;;
+                    0xd0b) arch_list="aarch64_cortex-a76 aarch64-cortex-a76" ;;
+                esac
+                arch_list="$arch_list aarch64_generic aarch64 arm64"
+                ;;
+            armv7l)
+                arch_list="armv7 arm_cortex-a9 arm_cortex-a7"
+                ;;
+            x86_64)
+                arch_list="x86_64 x86-64 amd64"
+                ;;
+            mipsel)
+                arch_list="mipsel_24kc mipsel mipsle"
+                ;;
+            *)
+                arch_list="$cpu_arch"
+                ;;
+        esac
+    fi
+    
+    echo "$arch_list" | tr ' ' '\n' | awk '!seen[$0]++' | tr '\n' ' ' | sed 's/ $//'
+}
+
+# 初始化架构信息
+init_arch() {
+    local full_list=$(detect_arch_priority)
+    
+    SYS_ARCH=$(echo "$full_list" | awk '{print $1}')
+    ARCH_FALLBACK="$full_list"
+    
+    log "系统架构: $SYS_ARCH"
+    log "架构列表: $ARCH_FALLBACK"
+}
+
+# 保存系统信息到配置文件
+save_system_info() {
+    local conf="/etc/auto-setup.conf"
+    
+    cat >> "$conf" <<EOF
+
+# 系统信息（自动检测）
+SYS_ARCH="$SYS_ARCH"
+ARCH_FALLBACK="$ARCH_FALLBACK"
+PKG_EXT="$PKG_EXT"
+PKG_INSTALL="$PKG_INSTALL"
+EOF
+    
+    log "✓ 系统信息已保存到配置"
+}
+
+# 检查包是否已安装
+is_installed() {
+    if echo "$PKG_INSTALL" | grep -q "opkg"; then
+        opkg list-installed | grep -q "^$1 "
+    else
+        apk info -e "$1" >/dev/null 2>&1
+    fi
+}
+
+# 安装单个官方源包
+install_pkg_official() {
+    local pkg=$(echo "$1" | xargs)
+    [ -z "$pkg" ] && return 1
+    
+    log "  安装 $pkg..."
+    
+    if $PKG_INSTALL "$pkg" >>"$LOG_FILE" 2>&1; then
+        log "  ✓ $pkg 安装成功"
+        INSTALLED_PACKAGES="$INSTALLED_PACKAGES $pkg"
+        
+        local lang=""
+        case "$pkg" in
+            luci-app-*) lang="luci-i18n-${pkg#luci-app-}-zh-cn" ;;
+            luci-theme-*) lang="luci-i18n-theme-${pkg#luci-theme-}-zh-cn" ;;
+        esac
+        
+        if [ -n "$lang" ] && ! is_installed "$lang"; then
+            if (echo "$PKG_INSTALL" | grep -q "opkg" && opkg list 2>/dev/null | grep -q "^$lang ") || \
+               (echo "$PKG_INSTALL" | grep -q "apk" && apk search "$lang" 2>/dev/null | grep -q "^$lang"); then
+                if $PKG_INSTALL "$lang" >>"$LOG_FILE" 2>&1; then
+                    log "  ✓ $lang 安装成功"
+                fi
+            fi
+        fi
+        return 0
+    else
+        log "  ✗ $pkg 安装失败"
+        return 1
+    fi
+}
+
+# 从官方源批量安装包
+install_official() {
+    local pkg_list="$1"
+    
+    log "步骤: 从官方源安装"
+    
+    [ -z "$pkg_list" ] && { log "没有需要安装的包"; return 0; }
+    
+    log "包列表: $(echo $pkg_list | wc -w) 个"
+
+    local ok=0 fail=0 skip=0 failed_list=""
+    
+    for pkg in $pkg_list; do
+        pkg=$(echo "$pkg" | xargs)
+        [ -z "$pkg" ] && continue
+        
+        if is_installed "$pkg"; then
+            log "⊝ $pkg 已安装"
+            skip=$((skip + 1))
+        elif install_pkg_official "$pkg"; then
+            ok=$((ok + 1))
+        else
+            failed_list="$failed_list $pkg"
+            fail=$((fail + 1))
+        fi
+    done
+    
+    PENDING_PACKAGES=$(echo "$failed_list" | xargs)
+    
+    log "安装完成: 成功 $ok, 失败 $fail, 跳过 $skip"
+    [ -n "$PENDING_PACKAGES" ] && log "失败包: $PENDING_PACKAGES"
+    
+    return 0
+}
+
+# 多源下载 auto-update.sh
+download_auto_update() {
+    log "下载 auto-update.sh..."
+    
+    mkdir -p /usr/bin/
+    
+    for url in $SCRIPT_URLS; do
+        local update_url=$(echo "$url" | sed 's/auto-setup$/auto-update.sh/')
+        
+        if curl -fsSL -o "$UPDATE_PATH" -H "User-Agent: $USER_AGENT" "$update_url" 2>/dev/null; then
+            if [ -f "$UPDATE_PATH" ] && [ -s "$UPDATE_PATH" ]; then
+                local size=$(wc -c < "$UPDATE_PATH" 2>/dev/null | tr -d ' ')
+                if [ "$size" -gt 1024 ]; then
+                    chmod +x "$UPDATE_PATH"
+                    log "✓ 下载成功 ($size 字节)"
+                    return 0
+                fi
+            fi
+        fi
+        
+        rm -f "$UPDATE_PATH"
+        log "✗ auto-update.sh 下载失败 $update_url"
+    done
+    
+    log "✗ 所有源均下载失败"
+    return 1
+}
+
+# 调用 auto-update.sh 进行第三方源安装
+call_third_party_install() {
+    local packages="$1"
+    
+    log "调用第三方源安装..."
+    log ""
+    
+    "$UPDATE_PATH" install $packages 2>&1 | tee -a "$LOG_FILE"
+    
+    log ""
+    THIRD_PARTY_INSTALLED_LIST=$(grep "^THIRD_PARTY_INSTALLED=" /etc/auto-setup.conf 2>/dev/null | cut -d'"' -f2)
+}
+
+# 验证 CRON_TIME 格式
+validate_cron_time() {
+    [ -z "$1" ] && return 1
+    [ $(echo "$1" | wc -w) -ne 5 ] && return 1
+    echo "$1" | grep -qE '^[0-9\*\-\,\/]+ [0-9\*\-\,\/]+ [0-9\*\-\,\/]+ [0-9\*\-\,\/]+ [0-9\*\-\,\/]+$'
+}
+
+# 配置定时任务
+setup_crontab() {
+    if ! validate_cron_time "$CRON_TIME"; then
+        log "自动更新: 未启用"
+        [ -n "$CRON_TIME" ] && log "  ⚠ CRON_TIME 格式错误: $CRON_TIME"
+        return 0
+    fi
+    
+    log "配置自动更新: $CRON_TIME"
+    
+    if (crontab -l 2>/dev/null | grep -v "$UPDATE_PATH"; echo "$CRON_TIME $UPDATE_PATH") | crontab -; then
+        log "✓ 定时任务已添加"
+        "$UPDATE_PATH" ts &
+        return 0
+    else
+        log "✗ 定时任务添加失败，命令: $CRON_TIME $UPDATE_PATH"
+        return 1
+    fi
+}
+
+# 删除安装脚本
+remove_self() {
+    log "删除安装脚本..."
+    
+    /etc/init.d/auto-setup disable 2>/dev/null
+    /etc/init.d/auto-setup-fetch disable 2>/dev/null
+    rm -f /etc/rc.d/S99auto-setup /etc/rc.d/K01auto-setup 2>/dev/null
+    rm -f /etc/rc.d/S99auto-setup-fetch 2>/dev/null
+    rm -f /etc/init.d/auto-setup /etc/init.d/auto-setup-fetch 2>/dev/null
+    
+    sleep 2
+    
+    if [ ! -f "/etc/init.d/auto-setup" ] && [ ! -f "/etc/init.d/auto-setup-fetch" ]; then
+        log "✓ 脚本已删除"
+        
+        if echo " $INSTALLED_PACKAGES $THIRD_PARTY_INSTALLED_LIST " | grep -q " luci-proto-wireguard "; then 
+            log "检测到 luci-proto-wireguard，10秒后重启..."
+            sleep 10
+            reboot
+        fi
+    else
+        local remaining=$(ls /etc/init.d/auto-setup* 2>/dev/null | xargs)
+        log "⚠ 脚本删除不完整，残留文件: $remaining"
+    fi
+}
+
+# 执行安装流程
+run_install() {
+    if [ "$INSTALL_PRIORITY" = "1" ]; then
+        log "策略: 官方源优先"
+        log ""
+        
+        PENDING_PACKAGES="$PACKAGES"
+        install_official "$PENDING_PACKAGES"
+        
+        if [ -n "$PENDING_PACKAGES" ]; then
+            log ""
+            download_auto_update || return 0
+            call_third_party_install "$PENDING_PACKAGES"
+        fi
+        
+    else
+        log "策略: 第三方源优先"
+        log ""
+        
+        download_auto_update || {
+            log "改用官方源"
+            PENDING_PACKAGES="$PACKAGES"
+            install_official "$PENDING_PACKAGES"
+            return 0
+        }
+        
+        call_third_party_install "$PACKAGES"
+        
+        local remaining=""
+        for pkg in $PACKAGES; do
+            echo " $THIRD_PARTY_INSTALLED_LIST " | grep -q " $pkg " || remaining="$remaining $pkg"
+        done
+        remaining=$(echo "$remaining" | xargs)
+        
+        if [ -n "$remaining" ]; then
+            log ""
+            PENDING_PACKAGES="$remaining"
+            install_official "$PENDING_PACKAGES"
+        fi
+    fi
+    
+    FAILED_PACKAGES="$PENDING_PACKAGES"
+}
+
+# 主安装流程
+run_setup() {
+    log "开始自动配置 (PID: $$)"
+    log "日志: $LOG_FILE"
+    log ""
+    
+    read_fetch_config
+    convert_urls_to_sources
+    generate_config
+    
+    detect_package_manager
+    init_arch
+    save_system_info
+    
+    log ""
+    if $PKG_UPDATE >>"$LOG_FILE" 2>&1; then
+        log "✓ 软件源已更新"
+    else
+        log "⚠ 软件源更新失败，命令: $PKG_UPDATE"
+    fi
+    
+    log ""
+    run_install
+    
+    log ""
+    if [ -z "$FAILED_PACKAGES" ]; then
+        log "✓ 所有包安装成功"
+    else
+        log "⚠ 安装失败: $FAILED_PACKAGES"
+    fi
+    
+    log ""
+    log "日志: $LOG_FILE"
+    
+    if [ -z "$FAILED_PACKAGES" ]; then
+        log ""
+        setup_crontab
+        log ""
+        remove_self
+    else
+        log "⚠ 保留脚本等待重试"
+    fi
+}
+
+start() {
+    (run_setup) &
+}
+
+stop() {
+    log "停止配置服务"
+}
