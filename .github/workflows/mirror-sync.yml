@@ -16,16 +16,14 @@ env:
   BRANCH: main
 
 jobs:
+  # ========================================
+  # 阶段1: 同步到 Gitee
+  # ========================================
   sync-to-gitee:
     runs-on: ubuntu-latest
     steps:
       - name: 检出本仓库
         uses: actions/checkout@v4
-
-      - name: 配置 Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: 推送文件到 Gitee
         env:
@@ -35,24 +33,23 @@ jobs:
           cp auto-update.sh auto-setup sync-dir/
 
           cd sync-dir
-          git init
-          git checkout -b ${{ env.BRANCH }}
-          git remote add gitee https://oauth2:${GITEE_TOKEN}@gitee.com/${{ env.GITEE_USERNAME }}/${{ env.REPO }}.git
+          git init -b ${{ env.BRANCH }}
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
+          git remote add gitee https://oauth2:${GITEE_TOKEN}@gitee.com/${{ env.GITEE_USERNAME }}/${{ env.REPO }}.git
           git add .
           git commit -m "同步 auto-update.sh 和 auto-setup 文件"
           git push gitee ${{ env.BRANCH }} --force
 
+  # ========================================
+  # 阶段2: 同步到 GitCode
+  # ========================================
   sync-to-gitcode:
     runs-on: ubuntu-latest
     steps:
       - name: 检出本仓库
         uses: actions/checkout@v4
-
-      - name: 配置 Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: 推送文件到 GitCode
         env:
@@ -62,10 +59,11 @@ jobs:
           cp auto-update.sh auto-setup sync-dir/
 
           cd sync-dir
-          git init
-          git checkout -b ${{ env.BRANCH }}
-          git remote add gitcode https://oauth2:${GITCODE_TOKEN}@gitcode.com/${{ env.GITCODE_USERNAME }}/${{ env.REPO }}.git
+          git init -b ${{ env.BRANCH }}
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
+          git remote add gitcode https://oauth2:${GITCODE_TOKEN}@gitcode.com/${{ env.GITCODE_USERNAME }}/${{ env.REPO }}.git
           git add .
           git commit -m "同步 auto-update.sh 和 auto-setup 文件"
           git push gitcode ${{ env.BRANCH }} --force
