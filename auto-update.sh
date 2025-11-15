@@ -282,14 +282,13 @@ run_install() {
 # 获取更新周期
 get_update_schedule() {
     local cron_entry=$(crontab -l 2>/dev/null | grep "auto-update.sh" | grep -v "^#" | head -n1)
-    
     [ -z "$cron_entry" ] && { echo "未设置"; return; }
-    
+
     local minute=$(echo "$cron_entry" | awk '{print $1}')
     local hour=$(echo "$cron_entry" | awk '{print $2}')
     local day=$(echo "$cron_entry" | awk '{print $3}')
     local weekday=$(echo "$cron_entry" | awk '{print $5}')
-    
+
     local week_name=""
     case "$weekday" in
         0|7) week_name="日" ;;
@@ -300,17 +299,30 @@ get_update_schedule() {
         5) week_name="五" ;;
         6) week_name="六" ;;
     esac
-    
-    local hour_str=""
-    [ "$hour" != "*" ] && ! echo "$hour" | grep -q "/" && hour_str=$(printf "%02d" "$hour")
-    
-    case 1 in
-        $([ "$weekday" != "*" ])) [ -n "$hour_str" ] && echo "每周${week_name} ${hour_str}点" || echo "每周${week_name}" ;;
-        $(echo "$hour" | grep -q "^\*/"))) echo "每$(echo $hour | sed 's/\*//')小时" ;;
-        $(echo "$day" | grep -q "^\*/"))) local d=$(echo $day | sed 's/\*//'); [ -n "$hour_str" ] && echo "每${d}天 ${hour_str}点" || echo "每${d}天" ;;
-        $([ "$hour" != "*" ] && [ "$day" = "*" ]))) echo "每天${hour_str}点" ;;
-        $(echo "$minute" | grep -q "^\*/"))) echo "每$(echo $minute | sed 's/\*//')分钟" ;;
-        *) echo "$minute $hour $day * $weekday" ;;
+
+    case "$minute $hour $day $weekday" in
+        *" * * "*[0-7])
+            if [ "$hour" != "*" ]; then
+                printf "每周%s %02d点\n" "$week_name" "$hour"
+            else
+                echo "每周${week_name}"
+            fi
+            ;;
+        "$minute */"*)
+            echo "每${hour#*/}小时"
+            ;;
+        "$minute "[0-9]*" * *")
+            printf "每天%02d点\n" "$hour"
+            ;;
+        "$minute * */"*)
+            echo "每${day#*/}天"
+            ;;
+        "*/"* " * * *")
+            echo "每${minute#*/}分钟"
+            ;;
+        *)
+            echo "$minute $hour $day * $weekday"
+            ;;
     esac
 }
 
