@@ -1,4 +1,4 @@
-name: 同步仓库到镜像
+name: 同步文件到镜像
 
 on:
   workflow_dispatch:
@@ -8,251 +8,64 @@ on:
     paths:
       - 'auto-update.sh'
       - 'auto-setup'
-      - 'third-party-installer.sh'
 
 env:
   GITEE_USERNAME: whzhni
   GITCODE_USERNAME: whzhni
   REPO: ipk_apk
   BRANCH: main
-  MONITOR_FILES: 'auto-update.sh auto-setup third-party-installer.sh'
 
 jobs:
-  # ========================================
-  # 阶段1: 同步到 Gitee
-  # ========================================
   sync-to-gitee:
     runs-on: ubuntu-latest
-    outputs:
-      status: ${{ steps.sync.outcome }}
-      duration: ${{ steps.sync.outputs.duration }}
-      configured: ${{ steps.sync.outputs.configured }}
-    
     steps:
       - name: 检出本仓库
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: 配置 Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: 同步到 Gitee
-        id: sync
+      - name: 推送文件到 Gitee
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
-          START_TIME=$(date +%s)
-          
-          if [ -z "$GITEE_TOKEN" ]; then
-            echo "⚠️ GITEE_TOKEN 未设置"
-            echo "configured=未设置" >> $GITHUB_OUTPUT
-            echo "duration=0" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          echo "configured=已设置" >> $GITHUB_OUTPUT
-          
-          echo "========================================="
-          echo "📋 源仓库: ${{ github.repository }}"
-          echo "🎯 目标: https://gitee.com/${{ env.GITEE_USERNAME }}/${{ env.REPO }}"
-          echo "========================================="
-          
-          git remote add gitee https://oauth2:${GITEE_TOKEN}@gitee.com/${{ env.GITEE_USERNAME }}/${{ env.REPO }}.git 2>/dev/null || \
-          git remote set-url gitee https://oauth2:${GITEE_TOKEN}@gitee.com/${{ env.GITEE_USERNAME }}/${{ env.REPO }}.git
-          
-          echo "🚀 开始推送..."
-          git push gitee +${{ env.BRANCH }}:${{ env.BRANCH }} --force
-          
-          END_TIME=$(date +%s)
-          DURATION=$((END_TIME - START_TIME))
-          echo "duration=$DURATION" >> $GITHUB_OUTPUT
-          
-          echo "✅ Gitee 同步完成 (耗时 ${DURATION}s)"
+          mkdir sync-dir
+          cp auto-update.sh auto-setup sync-dir/
 
-  # ========================================
-  # 阶段2: 同步到 GitCode
-  # ========================================
+          cd sync-dir
+          git init
+          git checkout -b ${{ env.BRANCH }}
+          git remote add gitee https://oauth2:${GITEE_TOKEN}@gitee.com/${{ env.GITEE_USERNAME }}/${{ env.REPO }}.git
+
+          git add .
+          git commit -m "同步 auto-update.sh 和 auto-setup 文件"
+          git push gitee ${{ env.BRANCH }} --force
+
   sync-to-gitcode:
     runs-on: ubuntu-latest
-    outputs:
-      status: ${{ steps.sync.outcome }}
-      duration: ${{ steps.sync.outputs.duration }}
-      configured: ${{ steps.sync.outputs.configured }}
-    
     steps:
       - name: 检出本仓库
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: 配置 Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: 同步到 GitCode
-        id: sync
+      - name: 推送文件到 GitCode
         env:
           GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
         run: |
-          START_TIME=$(date +%s)
-          
-          if [ -z "$GITCODE_TOKEN" ]; then
-            echo "⚠️ GITCODE_TOKEN 未设置"
-            echo "configured=未设置" >> $GITHUB_OUTPUT
-            echo "duration=0" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          echo "configured=已设置" >> $GITHUB_OUTPUT
-          
-          echo "========================================="
-          echo "📋 源仓库: ${{ github.repository }}"
-          echo "🎯 目标: https://gitcode.com/${{ env.GITCODE_USERNAME }}/${{ env.REPO }}"
-          echo "========================================="
-          
-          git remote add gitcode https://oauth2:${GITCODE_TOKEN}@gitcode.com/${{ env.GITCODE_USERNAME }}/${{ env.REPO }}.git 2>/dev/null || \
-          git remote set-url gitcode https://oauth2:${GITCODE_TOKEN}@gitcode.com/${{ env.GITCODE_USERNAME }}/${{ env.REPO }}.git
-          
-          echo "🚀 开始推送..."
-          git push gitcode +${{ env.BRANCH }}:${{ env.BRANCH }} --force
-          
-          END_TIME=$(date +%s)
-          DURATION=$((END_TIME - START_TIME))
-          echo "duration=$DURATION" >> $GITHUB_OUTPUT
-          
-          echo "✅ GitCode 同步完成 (耗时 ${DURATION}s)"
+          mkdir sync-dir
+          cp auto-update.sh auto-setup sync-dir/
 
-  # ========================================
-  # 阶段3: 生成报告
-  # ========================================
-  report:
-    runs-on: ubuntu-latest
-    needs: [sync-to-gitee, sync-to-gitcode]
-    if: always()
-    
-    steps:
-      - name: 生成同步报告
-        run: |
-          GITEE_STATUS="${{ needs.sync-to-gitee.result }}"
-          GITCODE_STATUS="${{ needs.sync-to-gitcode.result }}"
-          GITEE_CONFIGURED="${{ needs.sync-to-gitee.outputs.configured }}"
-          GITCODE_CONFIGURED="${{ needs.sync-to-gitcode.outputs.configured }}"
-          GITEE_DURATION="${{ needs.sync-to-gitee.outputs.duration }}"
-          GITCODE_DURATION="${{ needs.sync-to-gitcode.outputs.duration }}"
-          
-          # 设置默认值
-          GITEE_DURATION=${GITEE_DURATION:-0}
-          GITCODE_DURATION=${GITCODE_DURATION:-0}
-          GITEE_CONFIGURED=${GITEE_CONFIGURED:-未设置}
-          GITCODE_CONFIGURED=${GITCODE_CONFIGURED:-未设置}
-          
-          # 判断 Gitee 状态
-          if [ "$GITEE_CONFIGURED" == "未设置" ]; then
-            GITEE_ICON="⚙️"
-            GITEE_TEXT="未配置"
-          elif [ "$GITEE_STATUS" == "success" ]; then
-            GITEE_ICON="✅"
-            GITEE_TEXT="成功"
-          elif [ "$GITEE_STATUS" == "skipped" ]; then
-            GITEE_ICON="⏭️"
-            GITEE_TEXT="跳过"
-          else
-            GITEE_ICON="❌"
-            GITEE_TEXT="失败"
-          fi
-          
-          # 判断 GitCode 状态
-          if [ "$GITCODE_CONFIGURED" == "未设置" ]; then
-            GITCODE_ICON="⚙️"
-            GITCODE_TEXT="未配置"
-          elif [ "$GITCODE_STATUS" == "success" ]; then
-            GITCODE_ICON="✅"
-            GITCODE_TEXT="成功"
-          elif [ "$GITCODE_STATUS" == "skipped" ]; then
-            GITCODE_ICON="⏭️"
-            GITCODE_TEXT="跳过"
-          else
-            GITCODE_ICON="❌"
-            GITCODE_TEXT="失败"
-          fi
-          
-          # 触发方式
-          if [ "${{ github.event_name }}" == "push" ]; then
-            TRIGGER="监控文件变化"
-          else
-            TRIGGER="手动触发"
-          fi
-          
-          # 生成报告
-          cat >> $GITHUB_STEP_SUMMARY << EOF
-          # 🔄 仓库镜像同步报告
-          
-          **触发方式**: $TRIGGER  
-          **触发时间**: $(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S') (北京时间)  
-          **分支**: \`${{ env.BRANCH }}\`
-          
-          ---
-          
-          ### 📋 同步结果
-          
-          | 同步目标 | 同步状态 | 同步用时 | 配置状态 |
-          |---------|---------|---------|----------|
-          | Gitee 镜像 | $GITEE_ICON $GITEE_TEXT | ${GITEE_DURATION}s | $GITEE_CONFIGURED |
-          | GitCode 镜像 | $GITCODE_ICON $GITCODE_TEXT | ${GITCODE_DURATION}s | $GITCODE_CONFIGURED |
-          
-          ---
-          
-          ### 🌐 仓库地址
-          
-          - 🐙 **GitHub (本仓库)**: https://github.com/${{ github.repository }}
-          - 🟠 **Gitee 镜像**: https://gitee.com/${{ env.GITEE_USERNAME }}/${{ env.REPO }}
-          - 🔵 **GitCode 镜像**: https://gitcode.com/${{ env.GITCODE_USERNAME }}/${{ env.REPO }}
-          
-          ---
-          
-          ### 📁 监控文件
-          
-          EOF
-          
-          if [ "${{ github.event_name }}" == "push" ]; then
-            echo "**本次推送触发同步，监控的文件：**" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "**监控文件列表：**" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          for file in ${{ env.MONITOR_FILES }}; do
-            echo "- \`$file\`" >> $GITHUB_STEP_SUMMARY
-          done
-          
-          # 配置提示
-          if [ "$GITEE_CONFIGURED" == "未设置" ] || [ "$GITCODE_CONFIGURED" == "未设置" ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "---" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### ⚙️ 配置提示" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            if [ "$GITEE_CONFIGURED" == "未设置" ]; then
-              echo "- **Gitee**: 需在仓库 Settings → Secrets 中添加 \`GITEE_TOKEN\`" >> $GITHUB_STEP_SUMMARY
-            fi
-            if [ "$GITCODE_CONFIGURED" == "未设置" ]; then
-              echo "- **GitCode**: 需在仓库 Settings → Secrets 中添加 \`GITCODE_TOKEN\`" >> $GITHUB_STEP_SUMMARY
-            fi
-          fi
-          
-          # 同步说明
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📖 同步说明" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- 🔍 **监控机制**: 监控 3 个特定文件变化自动触发同步" >> $GITHUB_STEP_SUMMARY
-          echo "- 🔄 **同步方式**: 完整仓库镜像同步（强制推送）" >> $GITHUB_STEP_SUMMARY
-          echo "- 🚀 **手动触发**: 支持在 Actions 页面手动运行" >> $GITHUB_STEP_SUMMARY
-          
-          # Annotation
-          echo "::notice title=同步报告::触发: $TRIGGER | Gitee: $GITEE_ICON (${GITEE_DURATION}s) | GitCode: $GITCODE_ICON (${GITCODE_DURATION}s)"
+          cd sync-dir
+          git init
+          git checkout -b ${{ env.BRANCH }}
+          git remote add gitcode https://oauth2:${GITCODE_TOKEN}@gitcode.com/${{ env.GITCODE_USERNAME }}/${{ env.REPO }}.git
+
+          git add .
+          git commit -m "同步 auto-update.sh 和 auto-setup 文件"
+          git push gitcode ${{ env.BRANCH }} --force
