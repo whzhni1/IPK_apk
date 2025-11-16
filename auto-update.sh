@@ -125,19 +125,43 @@ extract_file_map() {
     
     FILE_MAP=""
     
-    # 提取所有文件名
-    local filenames=$(echo "$assets_json" | grep -o '"name":"[^"]*'"${PKG_EXT}" | cut -d'"' -f4)
+    # 修复：正确拼接正则表达式
+    local filenames=$(echo "$assets_json" | grep -o '"name":"[^"]*\'"${PKG_EXT}"'"' | cut -d'"' -f4)
+    
+    # 调试：显示提取到的所有文件名
+    if [ -n "$filenames" ]; then
+        local count=$(echo "$filenames" | wc -l)
+        log "  [调试] 从JSON中提取到 $count 个文件名"
+    else
+        log "  [调试] 未从JSON中提取到任何文件名"
+        # 显示assets内容的前500字符用于调试
+        log "  [调试] assets内容预览: $(echo "$assets_json" | head -c 500)"
+        return 1
+    fi
     
     # 为每个文件名查找下载地址
     local old_IFS="$IFS"
     IFS=$'\n'
     for filename in $filenames; do
         [ -z "$filename" ] && continue
-        local url=$(echo "$assets_json" | grep -o 'https[^"]*'"$filename" | head -1)
-        [ -n "$url" ] && FILE_MAP="${FILE_MAP}${filename}|${url}
+        
+        local url=$(echo "$assets_json" | grep -o '"browser_download_url":"https[^"]*'"$filename"'"' | cut -d'"' -f4 | head -1)
+        if [ -z "$url" ]; then
+            url=$(echo "$assets_json" | grep -o 'https://[^"]*'"$filename" | head -1)
+        fi
+        
+        if [ -n "$url" ]; then
+            FILE_MAP="${FILE_MAP}${filename}|${url}
 "
+            log "  [调试] 映射: $filename"
+        else
+            log "  [调试] 未找到URL: $filename"
+        fi
     done
     IFS="$old_IFS"
+    
+    [ -z "$FILE_MAP" ] && return 1
+    return 0
 }
 
 # 从映射中获取下载地址
@@ -189,7 +213,10 @@ match_and_download() {
     log "  应用名: $app_name"
     
     # 一次性提取所有文件映射
-    extract_file_map "$assets_json"
+    extract_file_map "$assets_json" || {
+        log "  ✗ 文件映射提取失败，平台: $platform"
+        return 1
+    }
     
     local all_files=$(get_all_filenames)
     
