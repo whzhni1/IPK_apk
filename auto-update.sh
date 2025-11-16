@@ -132,21 +132,6 @@ version_greater() {
     test "$(printf '%s\n%s\n' "$v1" "$v2" | sort -V | tail -1)" = "$v1"
 }
 
-# 从assets提取所有指定格式的文件名
-extract_all_filenames() {
-    local assets_json="$1"
-    local platform="$2"
-    
-    if [ "$platform" = "gitcode" ]; then
-        # GitCode: 先提取type=attach的部分，再提取文件名
-        echo "$assets_json" | sed 's/},{/}\n{/g' | grep '"type":"attach"' | \
-            grep -o '[a-zA-Z0-9_.-]*'"${PKG_EXT}" | sort -u
-    else
-        # Gitee: 直接提取所有.ipk文件名
-        echo "$assets_json" | grep -o '[a-zA-Z0-9_.-]*'"${PKG_EXT}" | sort -u
-    fi
-}
-
 # 下载并安装单个文件
 download_and_install_single() {
     local filename="$1" download_url="$2"
@@ -187,23 +172,29 @@ extract_app_name() {
     esac
 }
 
-# 从assets获取文件的下载地址
+extract_all_filenames() {
+    local assets_json="$1"
+    
+    # 匹配到 .ipk/.apk 就结束，不包括结尾引号
+    echo "$assets_json" | grep -o '"name":"[^"]*'"${PKG_EXT}" | cut -d'"' -f4
+}
+
+# 获取下载地址
 get_download_url_for_file() {
     local assets_json="$1"
     local filename="$2"
     
-    # 匹配 https 开头且以文件名结尾的 URL
     echo "$assets_json" | grep -o 'https[^"]*'"$filename" | head -1
 }
 
-# 匹配并下载安装所有文件
+# 匹配并下载安装
 match_and_download() {
     local assets_json="$1" pkg_name="$2" platform="$3"
     
     local app_name=$(extract_app_name "$pkg_name")
     log "  应用名: $app_name"
     
-    # 提取所有符合格式的文件名
+    # 提取所有文件名
     local all_files=$(extract_all_filenames "$assets_json" "$platform")
     
     [ -z "$all_files" ] && { 
@@ -214,25 +205,28 @@ match_and_download() {
     local file_count=$(echo "$all_files" | wc -l)
     log "  找到 $file_count 个 $PKG_EXT 文件"
     
-    # 显示所有文件（调试用）
-    log "  文件列表:"
+    # 显示文件列表
+    log "  文件列表（前10个）:"
     echo "$all_files" | head -10 | while read fname; do
         [ -n "$fname" ] && log "    - $fname"
     done
     [ $file_count -gt 10 ] && log "    ... 还有 $((file_count - 10)) 个文件"
     
     local success_count=0
-    local arch_found=0
     
-    # 1. 查找架构包
-    log "  查找架构包 (优先级: $(echo $ARCH_FALLBACK | awk '{for(i=1;i<=3;i++) print $i}' | xargs))..."
+    # 1. 查找架构包（改用 for 循环避免子shell）
+    log "  查找架构包..."
+    local arch_found=0
     for arch in $ARCH_FALLBACK; do
         [ $arch_found -eq 1 ] && break
         
-        echo "$all_files" | while IFS= read -r filename; do
+        local old_IFS="$IFS"
+        IFS=$'\n'
+        for filename in $all_files; do
+            IFS="$old_IFS"
             [ -z "$filename" ] && continue
             
-            # 排除luci开头的
+            # 排除luci开头
             case "$filename" in
                 luci-*) continue ;;
             esac
@@ -241,24 +235,24 @@ match_and_download() {
             if echo "$filename" | grep -q "$arch" && echo "$filename" | grep -q "$app_name"; then
                 local download_url=$(get_download_url_for_file "$assets_json" "$filename")
                 if [ -n "$download_url" ]; then
-                    log "  [架构包] $filename (匹配架构: $arch)"
-                    download_and_install_single "$filename" "$download_url" && {
+                    log "  [架构包] $filename (匹配: $arch)"
+                    if download_and_install_single "$filename" "$download_url"; then
                         success_count=$((success_count + 1))
                         arch_found=1
-                    }
-                    return
+                        break
+                    fi
                 else
                     log "  ✗ 未找到下载地址: $filename"
                 fi
             fi
         done
-        
-        [ $arch_found -eq 1 ] && break
+        IFS="$old_IFS"
     done
     
-    # 2. 查找luci包
-    log "  查找Luci包 (模式: luci-app-${app_name}_*.ipk 或 luci-theme-${app_name}_*.ipk)..."
-    echo "$all_files" | while IFS= read -r filename; do
+    # 2. 查找Luci包
+    log "  查找Luci包..."
+    IFS=$'\n'
+    for filename in $all_files; do
         [ -z "$filename" ] && continue
         
         case "$filename" in
@@ -267,15 +261,17 @@ match_and_download() {
                 if [ -n "$download_url" ]; then
                     log "  [Luci包] $filename"
                     download_and_install_single "$filename" "$download_url" && success_count=$((success_count + 1))
-                    return
+                    break
                 fi
                 ;;
         esac
     done
+    IFS="$old_IFS"
     
     # 3. 查找语言包
-    log "  查找语言包 (模式: *luci-i18n-*${app_name}*zh-cn*.ipk)..."
-    echo "$all_files" | while IFS= read -r filename; do
+    log "  查找语言包..."
+    IFS=$'\n'
+    for filename in $all_files; do
         [ -z "$filename" ] && continue
         
         case "$filename" in
@@ -284,22 +280,22 @@ match_and_download() {
                 if [ -n "$download_url" ]; then
                     log "  [语言包] $filename"
                     download_and_install_single "$filename" "$download_url" && success_count=$((success_count + 1))
-                    return
+                    break
                 fi
                 ;;
         esac
     done
+    IFS="$old_IFS"
     
     if [ $success_count -gt 0 ]; then
         log "  ✓ 成功安装 $success_count 个文件"
         return 0
     else
         log "  ✗ 未安装任何文件，共 $file_count 个文件但均未匹配成功"
-        log "  架构列表: $ARCH_FALLBACK"
-        log "  应用名: $app_name"
         return 1
     fi
 }
+
 # 统一的包处理函数
 process_package() {
     local pkg="$1" check_version="${2:-0}" current_ver="$3"
