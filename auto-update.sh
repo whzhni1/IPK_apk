@@ -94,21 +94,27 @@ api_get_tags() {
     esac
 }
 
-# 获取指定tag的Release
-api_get_release_by_tag() {
-    local platform="$1" owner="$2" repo="$3" tag="$4"
+# 获取最新Release
+api_get_latest_release() {
+    local platform="$1" owner="$2" repo="$3"
     local token=$(get_token_for_platform "$platform")
     local api_url=""
     
     case "$platform" in
         gitee)
-            api_url="https://gitee.com/api/v5/repos/${owner}/${repo}/releases/tags/${tag}"
+            # Gitee: token 用 query string
+            api_url="https://gitee.com/api/v5/repos/${owner}/${repo}/releases"
             [ -n "$token" ] && api_url="${api_url}?access_token=${token}"
             curl -s "$api_url"
             ;;
         gitcode)
-            api_url="https://api.gitcode.com/api/v5/repos/${owner}/${repo}/releases/tags/${tag}"
-            [ -n "$token" ] && curl -s -H "Authorization: Bearer $token" "$api_url" || curl -s "$api_url"
+            # GitCode: token 用 Authorization header
+            api_url="https://gitcode.com/api/v5/repos/${owner}/${repo}/releases"
+            if [ -n "$token" ]; then
+                curl -s -H "Authorization: Bearer $token" "$api_url"
+            else
+                curl -s "$api_url"
+            fi
             ;;
         *) return 1 ;;
     esac
@@ -145,43 +151,94 @@ match_files_from_assets() {
     echo "$matched"
 }
 
-# 下载并安装文件
-download_and_install_files() {
-    local files="$1" pkg_name="$2"
-    local old_IFS="$IFS"
-    IFS='|'
+# 下载并安装单个文件
+download_and_install_single() {
+    local filename="$1" download_url="$2"
     
-    for file_json in $files; do
-        [ -z "$file_json" ] && continue
+    log "    下载: $filename"
+    
+    curl -fsSL -o "/tmp/$filename" "$download_url" 2>/dev/null || {
+        log "    ✗ 下载失败 $download_url"
+        return 1
+    }
+    
+    validate_downloaded_file "/tmp/$filename" 10240 || {
+        rm -f "/tmp/$filename"
+        return 1
+    }
+    
+    log "    安装: $filename"
+    
+    if $PKG_INSTALL "/tmp/$filename" >>"$LOG_FILE" 2>&1; then
+        log "    ✓ 安装成功"
+        rm -f "/tmp/$filename"
+        return 0
+    else
+        local error=$(tail -3 "$LOG_FILE" | grep -v '^\[' | xargs)
+        log "    ✗ 安装失败: $error"
+        log "    文件保留: /tmp/$filename"
+        return 1
+    fi
+}
+
+# 匹配并下载安装所有文件
+match_and_download() {
+    local assets_json="$1" pkg_name="$2" platform="$3"
+    
+    # GitCode需要过滤掉type=source的文件
+    local filtered_assets="$assets_json"
+    [ "$platform" = "gitcode" ] && filtered_assets=$(echo "$assets_json" | grep '"type":"attach"')
+    
+    local success_count=0
+    
+    # 1. 找架构包（找到第一个就停止）
+    log "  查找架构包..."
+    for arch in $ARCH_FALLBACK; do
+        # 提取包含该架构的文件JSON对象
+        local arch_asset=$(echo "$filtered_assets" | grep -o '{[^}]*"name":"[^"]*'"$arch"'[^"]*'"$PKG_EXT"'"[^}]*}' | head -1)
         
-        local filename=$(echo "$file_json" | grep -o '"name":"[^"]*"' | cut -d'"' -f4)
-        local download_url=$(echo "$file_json" | grep -o '"browser_download_url":"[^"]*"' | cut -d'"' -f4)
-        
-        [ -z "$download_url" ] && { log "  ✗ 未找到下载链接: $filename"; IFS="$old_IFS"; return 1; }
-        
-        log "  下载: $filename"
-        
-        if curl -fsSL -o "/tmp/$filename" "$download_url" 2>/dev/null && validate_downloaded_file "/tmp/$filename" 10240; then
-            log "  安装: $filename"
-            if $PKG_INSTALL "/tmp/$filename" >>"$LOG_FILE" 2>&1; then
-                log "  ✓ $filename 安装成功"
-            else
-                log "  ✗ $filename 安装失败"
-                rm -f "/tmp/$filename"
-                IFS="$old_IFS"
-                return 1
+        if [ -n "$arch_asset" ]; then
+            local filename=$(echo "$arch_asset" | grep -o '"name":"[^"]*"' | cut -d'"' -f4)
+            local download_url=$(echo "$arch_asset" | grep -o '"browser_download_url":"[^"]*"' | cut -d'"' -f4)
+            
+            if [ -n "$download_url" ]; then
+                log "  [架构包] $filename ($arch)"
+                download_and_install_single "$filename" "$download_url" && success_count=$((success_count + 1))
+                break  # 找到第一个就停止架构遍历
             fi
-            rm -f "/tmp/$filename"
-        else
-            log "  ✗ $filename 下载失败 $download_url"
-            rm -f "/tmp/$filename"
-            IFS="$old_IFS"
-            return 1
         fi
     done
     
-    IFS="$old_IFS"
-    return 0
+    # 2. 找 luci-app 或 luci-theme 包
+    log "  查找 Luci 包..."
+    local luci_asset=$(echo "$filtered_assets" | grep -o '{[^}]*"name":"luci-[^"]*'"$PKG_EXT"'"[^}]*}' | head -1)
+    
+    if [ -n "$luci_asset" ]; then
+        local filename=$(echo "$luci_asset" | grep -o '"name":"[^"]*"' | cut -d'"' -f4)
+        local download_url=$(echo "$luci_asset" | grep -o '"browser_download_url":"[^"]*"' | cut -d'"' -f4)
+        
+        if [ -n "$download_url" ]; then
+            log "  [Luci包] $filename"
+            download_and_install_single "$filename" "$download_url" && success_count=$((success_count + 1))
+        fi
+    fi
+    
+    # 3. 找语言包（zh-cn）
+    log "  查找语言包..."
+    local lang_asset=$(echo "$filtered_assets" | grep -o '{[^}]*"name":"[^"]*zh-cn[^"]*'"$PKG_EXT"'"[^}]*}' | head -1)
+    
+    if [ -n "$lang_asset" ]; then
+        local filename=$(echo "$lang_asset" | grep -o '"name":"[^"]*"' | cut -d'"' -f4)
+        local download_url=$(echo "$lang_asset" | grep -o '"browser_download_url":"[^"]*"' | cut -d'"' -f4)
+        
+        if [ -n "$download_url" ]; then
+            log "  [语言包] $filename"
+            download_and_install_single "$filename" "$download_url" && success_count=$((success_count + 1))
+        fi
+    fi
+    
+    # 至少成功安装一个文件
+    [ $success_count -gt 0 ] && return 0 || return 1
 }
 
 # 统一的包处理函数
@@ -196,52 +253,47 @@ process_package() {
         
         log "  平台: $platform ($owner/$pkg)"
         
-        local tags_json=$(api_get_tags "$platform" "$owner" "$pkg")
+        local releases_json=$(api_get_latest_release "$platform" "$owner" "$pkg")
         
-        echo "$tags_json" | grep -q '"name"' || {
-            if echo "$tags_json" | grep -q '"message"'; then
-                local error=$(echo "$tags_json" | grep -o '"message":"[^"]*"' | cut -d'"' -f4 | head -1)
-                echo "$error" | grep -q "404\|Not Found\|does not exist" && log "  ✗ 仓库不存在: $owner/$pkg"
-            else
-                log "  ✗ 获取tags失败: 无响应"
-            fi
+        # 检查返回数据
+        echo "$releases_json" | grep -q '\[' || {
+            log "  ✗ 获取releases失败"
             continue
         }
         
-        local latest_tag=$(echo "$tags_json" | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
+        # 提取第一个release（最新版）
+        local first_release=$(echo "$releases_json" | sed 's/^\[//' | sed 's/\]$//' | sed 's/},{/}\n{/g' | head -1)
+        
+        # 提取版本号
+        local latest_tag=$(echo "$first_release" | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4)
         
         [ -z "$latest_tag" ] && { log "  ✗ 未找到版本"; continue; }
         
         log "  最新版本: $latest_tag"
         
-        [ "$check_version" = "1" ] && {
-            version_greater "$latest_tag" "$current_ver" || { log "  ○ 当前版本已是最新 ($current_ver)"; return 2; }
+        # 版本比对（update模式）
+        if [ "$check_version" = "1" ]; then
+            version_greater "$latest_tag" "$current_ver" || { 
+                log "  ○ 当前版本已是最新 ($current_ver)"
+                return 2
+            }
             log "  发现新版本: $current_ver → $latest_tag"
-        }
+        fi
         
-        local release_json=$(api_get_release_by_tag "$platform" "$owner" "$pkg" "$latest_tag")
+        # 检查assets
+        echo "$first_release" | grep -q '"assets"' || { log "  ✗ 无assets"; continue; }
         
-        echo "$release_json" | grep -q '"assets"' || {
-            if echo "$release_json" | grep -q '"message"'; then
-                local error=$(echo "$release_json" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
-                log "  ✗ Release错误: $error"
-            else
-                log "  ✗ 未找到Release"
-            fi
-            continue
-        }
-        
-        local assets=$(echo "$release_json" | sed -n '/"assets":\[/,/\]/p')
+        local assets=$(echo "$first_release" | sed -n '/"assets":\[/,/\]/p')
         
         echo "$assets" | grep -q '\[\]' && { log "  ✗ assets为空"; continue; }
         
-        local files=$(match_files_from_assets "$assets" "$pkg")
-        
-        [ -z "$files" ] && { log "  ✗ 未找到匹配的文件"; continue; }
-        
-        download_and_install_files "$files" "$pkg" && { log "  ✓ $pkg 安装成功"; return 0; }
-        
-        log "  ✗ 安装失败"
+        # 匹配并下载安装
+        if match_and_download "$assets" "$pkg" "$platform"; then
+            log "  ✓ $pkg 安装成功"
+            return 0
+        else
+            log "  ✗ 安装失败"
+        fi
     done
     
     log "✗ $pkg 所有源均失败"
