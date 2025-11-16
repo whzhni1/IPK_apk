@@ -1,6 +1,6 @@
 #!/bin/sh
 
-SCRIPT_VERSION="2.1.0"
+SCRIPT_VERSION="2.0.0"
 LOG_FILE="/tmp/auto-update.log"
 CONFIG_BACKUP_DIR="/tmp/config_Backup"
 DEVICE_MODEL="$(cat /tmp/sysinfo/model 2>/dev/null || echo '未知设备')"
@@ -35,17 +35,6 @@ load_config() {
         log "✗ 配置文件不存在: $conf"
         return 1
     fi
-}
-
-# 解析源配置
-parse_source_config() {
-    local source_config="$1"
-    eval "
-        PLATFORM='$(echo "$source_config" | cut -d'|' -f1)'
-        REPO='$(echo "$source_config" | cut -d'|' -f2)'
-        BRANCH='$(echo "$source_config" | cut -d'|' -f3)'
-        OWNER='$(echo "$source_config" | cut -d'|' -f2 | cut -d'/' -f1)'
-    "
 }
 
 # 通用工具函数
@@ -113,19 +102,14 @@ normalize_version() {
     echo "$1" | sed 's/^[vV]//' | sed 's/[-_].*//'
 }
 
-version_greater() {
-    local v1=$(normalize_version "$1")
-    local v2=$(normalize_version "$2")
-    
-    [ "$v1" = "$v2" ] && return 1
-    
-    test "$(printf '%s\n%s\n' "$v1" "$v2" | sort -V | tail -1)" = "$v1"
-}
-
 # 版本比较
+normalize_version() {
+    echo "$1" | sed 's/^[vV]//' | sed 's/[-_].*//'
+}
 version_greater() {
     local v1=$(normalize_version "$1")
     local v2=$(normalize_version "$2")
+    [ "$v1" = "$v2" ] && return 1
     test "$(printf '%s\n%s\n' "$v1" "$v2" | sort -V | tail -1)" = "$v1"
 }
 
@@ -142,7 +126,10 @@ extract_app_name() {
 # 提取文件名列表
 extract_filenames() {
     local json_data="$1"
+    
     ASSETS_JSON_CACHE="$json_data"
+    
+    # 直接从完整 JSON 提取所有匹配的文件名
     case "$PKG_EXT" in
         .ipk)
             ASSET_FILENAMES=$(echo "$json_data" | grep -o '"name":"[^"]*\.ipk"' | cut -d'"' -f4)
@@ -157,12 +144,12 @@ extract_filenames() {
     esac
     
     [ -z "$ASSET_FILENAMES" ] && {
-        log "未找到任何 ${PKG_EXT} 文件"
+        log "  [调试] 未找到任何 ${PKG_EXT} 文件"
         return 1
     }
     
     local count=$(echo "$ASSET_FILENAMES" | wc -l)
-    log "成功提取 $count 个文件"
+    log "  [调试] 成功提取 $count 个文件名"
     return 0
 }
 
@@ -182,21 +169,29 @@ get_all_filenames() {
 # 下载并安装单个文件
 download_and_install_single() {
     local filename="$1"
+    
+    # 动态查找下载地址
     local download_url=$(get_download_url "$filename")
+    
     [ -z "$download_url" ] && {
         log "    ✗ 未找到下载地址: $filename"
         return 1
     }
+    
     log "    下载: $filename"
+    
     curl -fsSL -o "/tmp/$filename" "$download_url" 2>/dev/null || {
         log "    ✗ 下载失败"
         return 1
     }
+    
     validate_downloaded_file "/tmp/$filename" 10240 || {
         rm -f "/tmp/$filename"
         return 1
     }
+    
     log "    安装: $filename"
+    
     if $PKG_INSTALL "/tmp/$filename" >>"$LOG_FILE" 2>&1; then
         log "    ✓ 安装成功"
         rm -f "/tmp/$filename"
@@ -210,21 +205,30 @@ download_and_install_single() {
 }
 
 # 匹配并下载安装
+# 匹配并下载安装（修正版）
 match_and_download() {
     local assets_json="$1" pkg_name="$2" platform="$3"
+    
     local app_name=$(extract_app_name "$pkg_name")
     log "  应用名: $app_name"
+    
+    # 提取文件名列表并缓存 JSON
     extract_filenames "$assets_json" || {
         log "  ✗ 文件名提取失败，平台: $platform"
         return 1
     }
+    
     local all_files=$(get_all_filenames)
+    
     [ -z "$all_files" ] && { 
         log "  ✗ 未找到任何 $PKG_EXT 文件，平台: $platform"
         return 1
     }
+    
     local file_count=$(echo "$all_files" | wc -l)
     log "  找到 $file_count 个 $PKG_EXT 文件"
+    
+    # 显示文件列表（前5个）
     if [ "$file_count" -le 5 ]; then
         log "  文件列表:"
         echo "$all_files" | while read fname; do
@@ -237,35 +241,52 @@ match_and_download() {
         done
         log "    ... 还有 $((file_count - 5)) 个文件"
     fi
+    
     local success_count=0
     local old_IFS="$IFS"
+    
+    # 1. 查找架构包
+    log "  查找架构包..."
     local arch_found=0
     for arch in $ARCH_FALLBACK; do
         [ $arch_found -eq 1 ] && break
-        local arch_matched=0
+        
+        local arch_matched=0  # 标记当前架构是否找到匹配的文件
+        
         IFS=$'\n'
         for filename in $all_files; do
             IFS="$old_IFS"
             [ -z "$filename" ] && continue
+            
+            # 跳过 luci 包
             case "$filename" in
                 luci-*) continue ;;
             esac
+            
+            # 匹配架构和应用名
             if echo "$filename" | grep -q "$arch" && echo "$filename" | grep -q "$app_name"; then
-                arch_matched=1
+                arch_matched=1  # 标记找到匹配
                 log "  [架构包] $filename (匹配: $arch)"
                 if download_and_install_single "$filename"; then
                     success_count=$((success_count + 1))
                     arch_found=1
                 fi
+                # 找到匹配就停止（无论下载成功还是失败）
                 break
             fi
         done
+        
+        # 如果当前架构找到了匹配（无论成功失败），都停止尝试其他架构
         [ $arch_matched -eq 1 ] && break
     done
+    
+    # 2. 查找Luci包
+    log "  查找Luci包..."
     IFS=$'\n'
     for filename in $all_files; do
         IFS="$old_IFS"
         [ -z "$filename" ] && continue
+        
         case "$filename" in
             luci-app-${app_name}_*${PKG_EXT}|luci-app-${app_name}-*${PKG_EXT}|\
             luci-theme-${app_name}_*${PKG_EXT}|luci-theme-${app_name}-*${PKG_EXT})
@@ -275,6 +296,9 @@ match_and_download() {
                 ;;
         esac
     done
+    
+    # 3. 查找语言包
+    log "  查找语言包..."
     IFS=$'\n'
     for filename in $all_files; do
         IFS="$old_IFS"
@@ -288,9 +312,13 @@ match_and_download() {
                 ;;
         esac
     done
+    
     IFS="$old_IFS"
+    
+    # 清理缓存
     ASSETS_JSON_CACHE=""
     ASSET_FILENAMES=""
+    
     if [ $success_count -gt 0 ]; then
         log "  ✓ 成功安装 $success_count 个文件"
         return 0
@@ -302,21 +330,33 @@ match_and_download() {
     fi
 }
 
-# 统一的包处理函数
+# 统一的包处理函数（修复版）
 process_package() {
     local pkg="$1" check_version="${2:-0}" current_ver="$3"
+    
     log "处理包: $pkg"
+    
     for source_config in $API_SOURCES; do
-        parse_source_config "$source_config"
+        local platform=$(echo "$source_config" | cut -d'|' -f1)
+        local owner=$(echo "$source_config" | cut -d'|' -f2 | cut -d'/' -f1)
+        
         log "  平台: $platform ($owner/$pkg)"
+        
         local releases_json=$(api_get_latest_release "$platform" "$owner" "$pkg")
+        
         echo "$releases_json" | grep -q '\[' || {
             log "  ✗ 获取releases失败"
             continue
         }
+        
+        # 提取版本号（从第一个 tag_name）
         local latest_tag=$(echo "$releases_json" | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4)
+        
         [ -z "$latest_tag" ] && { log "  ✗ 未找到版本"; continue; }
+        
         log "  最新版本: $latest_tag"
+        
+        # 版本比对（update模式）
         if [ "$check_version" = "1" ]; then
             version_greater "$latest_tag" "$current_ver" || { 
                 log "  ○ 当前版本已是最新 ($current_ver)"
@@ -324,7 +364,11 @@ process_package() {
             }
             log "  发现新版本: $current_ver → $latest_tag"
         fi
+        
+        # 检查assets
         echo "$releases_json" | grep -q '"assets"' || { log "  ✗ 无assets"; continue; }
+        
+        # 直接传递完整的 releases_json
         if match_and_download "$releases_json" "$pkg" "$platform"; then
             log "  ✓ $pkg 安装成功"
             return 0
@@ -479,8 +523,10 @@ install_language_package() {
     else
         apk search "$lang_pkg" 2>/dev/null | grep -q "^$lang_pkg" || return 0
     fi
+    
     local action="安装"
     is_installed "$lang_pkg" && action="升级"
+    
     log "    ${action}语言包 $lang_pkg..."
     $PKG_INSTALL "$lang_pkg" >>"$LOG_FILE" 2>&1 && log "    ✓ $lang_pkg ${action}成功" || log "    ⚠ $lang_pkg ${action}失败"
 }
@@ -671,37 +717,38 @@ update_thirdparty_packages() {
     return 0
 }
 
-# 脚本自更新（精简版）
+# 脚本自更新
 check_script_update() {
     log "检查脚本更新"
     log "当前脚本版本: $SCRIPT_VERSION"
+    
     local temp="/tmp/auto-update-new.sh"
     local current_script=$(readlink -f "$0")
+    
     for source_config in $API_SOURCES; do
-        parse_source_config "$source_config"
+        local platform=$(echo "$source_config" | cut -d'|' -f1)
+        local repo=$(echo "$source_config" | cut -d'|' -f2)
+        local branch=$(echo "$source_config" | cut -d'|' -f3)
+        
         local script_url=""
         case "$platform" in
-            gitee)
-                script_url="https://gitee.com/${repo}/raw/${branch}/auto-update.sh"
-                ;;
-            gitcode)
-                script_url="https://gitcode.com/${repo}/raw/${branch}/auto-update.sh"
-                ;;
-            *)
-                log "  ⚠ 不支持的平台: $platform"
-                continue
-                ;;
+            gitcode) script_url="https://raw.gitcode.com/${repo}/raw/${branch}/auto-update.sh" ;;
+            gitee)   script_url="https://gitee.com/${repo}/raw/${branch}/auto-update.sh" ;;
+            *)       log "  ⚠ 不支持的平台: $platform"; continue ;;
         esac
+        
         log "  尝试从 $platform 更新..."
         curl -fsSL -o "$temp" "$script_url" 2>/dev/null || {
             log "  ✗ 下载失败: $platform"
             continue
         }
+
         if ! grep -q "run_update" "$temp"; then
             log "  ✗ 下载不完整: $platform"
             rm -f "$temp"
             continue
         fi
+
         local remote_ver=$(grep -o 'SCRIPT_VERSION="[^"]*"' "$temp" | head -1 | cut -d'"' -f2)
         
         if [ -z "$remote_ver" ]; then
@@ -709,14 +756,18 @@ check_script_update() {
             rm -f "$temp"
             continue
         fi
+        
         log "  ✓ 获取到远程版本: $remote_ver"
+
         if [ "$SCRIPT_VERSION" = "$remote_ver" ]; then
             log "○ 脚本已是最新版本"
             rm -f "$temp"
             return 0
         fi
+        
         if version_greater "$remote_ver" "$SCRIPT_VERSION"; then
             log "↻ 发现新版本: $SCRIPT_VERSION → $remote_ver"
+
             if mv "$temp" "$current_script" && chmod +x "$current_script"; then
                 log "✓ 脚本更新成功！版本: $SCRIPT_VERSION → $remote_ver, 来源: $platform"
                 log "脚本已更新，重新启动新版本"
@@ -732,6 +783,7 @@ check_script_update() {
             return 0
         fi
     done
+    
     log "✗ 所有源均无法更新脚本"
     return 1
 }
