@@ -1,6 +1,6 @@
 #!/bin/sh
 
-SCRIPT_VERSION="2.0.0"
+SCRIPT_VERSION="2.1.0"
 LOG_FILE="/tmp/auto-update.log"
 CONFIG_BACKUP_DIR="/tmp/config_Backup"
 DEVICE_MODEL="$(cat /tmp/sysinfo/model 2>/dev/null || echo '未知设备')"
