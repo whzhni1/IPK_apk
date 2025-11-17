@@ -1,8 +1,8 @@
-name: Scheduled Sync Tasks
+name: 定时触发工作流
 
 on:
   schedule:
-    - cron: '0 19 * * *'
+    - cron: '0 17 * * *'
   workflow_dispatch:
 env:
   DEFAULT_BRANCH: 'main'
