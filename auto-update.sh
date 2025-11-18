@@ -37,6 +37,15 @@ load_config() {
     fi
 }
 
+# 解析源配置
+parse_source_config() {
+    local source_config="$1"
+    platform=$(echo "$source_config" | cut -d'|' -f1)
+    repo=$(echo "$source_config" | cut -d'|' -f2)
+    branch=$(echo "$source_config" | cut -d'|' -f3)
+    owner=$(echo "$source_config" | cut -d'|' -f2 | cut -d'/' -f1)
+}
+
 # 通用工具函数
 format_size() {
     local bytes="$1"
@@ -51,6 +60,7 @@ format_size() {
 to_lower() {
     echo "$1" | tr 'A-Z' 'a-z'
 }
+
 # 验证下载文件
 validate_downloaded_file() {
     local filepath="$1" min_size="${2:-1024}"
@@ -212,70 +222,64 @@ match_and_download() {
     log "  找到 $file_count 个 $PKG_EXT 文件"
     if [ "$file_count" -le 5 ]; then
         log "  文件列表:"
-        echo "$all_files" | while read fname; do
-            [ -n "$fname" ] && log "    - $fname"
-        done
+        echo "$all_files" | while read fname; do [ -n "$fname" ] && log "    - $fname"; done
     else
         log "  文件列表（前5个）:"
-        echo "$all_files" | head -5 | while read fname; do
-            [ -n "$fname" ] && log "    - $fname"
-        done
+        echo "$all_files" | head -5 | while read fname; do [ -n "$fname" ] && log "    - $fname"; done
         log "    ... 还有 $((file_count - 5)) 个文件"
     fi
-    local success_count=0
-    local old_IFS="$IFS"
+    local success_count=0 old_IFS="$IFS"
     local app_name_lower=$(to_lower "$app_name")
-    local arch_found=0
-    for arch in $ARCH_FALLBACK; do
-        [ $arch_found -eq 1 ] && break
-        local arch_matched=0
+    find_and_install() {
+        local pkg_type="$1" label="$2"
+        local found=0
+        if [ "$pkg_type" = "arch" ]; then
+            for arch in $ARCH_FALLBACK; do
+                [ $found -eq 1 ] && break
+                search_files "$pkg_type" "$label" "$arch" && found=1
+            done
+        else
+            search_files "$pkg_type" "$label"
+        fi
+    }
+    search_files() {
+        local pkg_type="$1" label="$2" arch="$3"
         IFS=$'\n'
         for filename in $all_files; do
             IFS="$old_IFS"
             [ -z "$filename" ] && continue
-            case "$filename" in
-                luci-*) continue ;;
-            esac
+            [ "$pkg_type" = "arch" ] && case "$filename" in luci-*) continue ;; esac
             local filename_lower=$(to_lower "$filename")
-            if echo "$filename_lower" | grep -q "$arch" && echo "$filename_lower" | grep -q "$app_name_lower"; then
-                arch_matched=1
-                log "  [架构包] $filename (匹配: $arch)"
-                if download_and_install_single "$filename"; then
-                    success_count=$((success_count + 1))
-                    arch_found=1
-                fi
-                break
+            local matched=0
+            case "$pkg_type" in
+                arch)
+                    echo "$filename_lower" | grep -q "$arch" && echo "$filename_lower" | grep -q "$app_name_lower" && matched=1
+                    ;;
+                luci)
+                    case "$filename_lower" in
+                        luci-app-${app_name_lower}_*${PKG_EXT}|luci-app-${app_name_lower}-*${PKG_EXT}|\
+                        luci-theme-${app_name_lower}_*${PKG_EXT}|luci-theme-${app_name_lower}-*${PKG_EXT})
+                            matched=1 ;;
+                    esac
+                    ;;
+                lang)
+                    case "$filename_lower" in
+                        *luci-i18n-*${app_name_lower}*zh-cn*${PKG_EXT}|*luci-i18n-*${app_name_lower}*zh_cn*${PKG_EXT})
+                            matched=1 ;;
+                    esac
+                    ;;
+            esac
+            if [ $matched -eq 1 ]; then
+                [ "$pkg_type" = "arch" ] && log "  [$label] $filename (匹配: $arch)" || log "  [$label] $filename"
+                download_and_install_single "$filename" && success_count=$((success_count + 1))
+                return 0
             fi
         done
-        [ $arch_matched -eq 1 ] && break
-    done
-    IFS=$'\n'
-    for filename in $all_files; do
-        IFS="$old_IFS"
-        [ -z "$filename" ] && continue
-        local filename_lower=$(to_lower "$filename")
-        case "$filename_lower" in
-            luci-app-${app_name_lower}_*${PKG_EXT}|luci-app-${app_name_lower}-*${PKG_EXT}|\
-            luci-theme-${app_name_lower}_*${PKG_EXT}|luci-theme-${app_name_lower}-*${PKG_EXT})
-                log "  [Luci包] $filename"
-                download_and_install_single "$filename" && success_count=$((success_count + 1))
-                break
-                ;;
-        esac
-    done
-    IFS=$'\n'
-    for filename in $all_files; do
-        IFS="$old_IFS"
-        [ -z "$filename" ] && continue
-        local filename_lower=$(to_lower "$filename")
-        case "$filename_lower" in
-            *luci-i18n-*${app_name_lower}*zh-cn*${PKG_EXT}|*luci-i18n-*${app_name_lower}*zh_cn*${PKG_EXT})
-                log "  [语言包] $filename"
-                download_and_install_single "$filename" && success_count=$((success_count + 1))
-                break
-                ;;
-        esac
-    done
+        return 1
+    }
+    find_and_install "arch" "架构包"
+    find_and_install "luci" "Luci包"
+    find_and_install "lang" "语言包"
     IFS="$old_IFS"
     ASSETS_JSON_CACHE=""
     ASSET_FILENAMES=""
@@ -295,8 +299,7 @@ process_package() {
     local pkg="$1" check_version="${2:-0}" current_ver="$3"
     log "处理包: $pkg"
     for source_config in $API_SOURCES; do
-        local platform=$(echo "$source_config" | cut -d'|' -f1)
-        local owner=$(echo "$source_config" | cut -d'|' -f2 | cut -d'/' -f1)
+        parse_source_config "$source_config"
         log "  平台: $platform ($owner/$pkg)"
         local releases_json=$(api_get_latest_release "$platform" "$owner" "$pkg")
         echo "$releases_json" | grep -q '\[' || {
@@ -636,9 +639,7 @@ check_script_update() {
     local temp="/tmp/auto-update-new.sh"
     local current_script=$(readlink -f "$0")
     for source_config in $API_SOURCES; do
-        local platform=$(echo "$source_config" | cut -d'|' -f1)
-        local repo=$(echo "$source_config" | cut -d'|' -f2)
-        local branch=$(echo "$source_config" | cut -d'|' -f3)
+        parse_source_config "$source_config"
         local script_url=""
         case "$platform" in
             gitcode) script_url="https://raw.gitcode.com/${repo}/raw/${branch}/auto-update.sh" ;;
