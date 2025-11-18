@@ -229,20 +229,28 @@ match_and_download() {
         echo "$all_files" | head -5 | while read fname; do [ -n "$fname" ] && log "    - $fname"; done
         log "    ... 还有 $((file_count - 5)) 个文件"
     fi
+    
     local success_count=0 old_IFS="$IFS"
     local app_name_lower=$(to_lower "$app_name")
+    
+    # 共用的查找安装函数
     find_and_install() {
         local pkg_type="$1" label="$2"
         local found=0
+        
+        # 架构包需要遍历架构
         if [ "$pkg_type" = "arch" ]; then
             for arch in $ARCH_FALLBACK; do
                 [ $found -eq 1 ] && break
                 search_files "$pkg_type" "$label" "$arch" && found=1
             done
         else
+            # luci 和 lang 直接查找
             search_files "$pkg_type" "$label"
         fi
     }
+    
+    # 共用的文件搜索函数
     search_files() {
         local pkg_type="$1" label="$2" arch="$3"
         
@@ -250,9 +258,14 @@ match_and_download() {
         for filename in $all_files; do
             IFS="$old_IFS"
             [ -z "$filename" ] && continue
+            
+            # 架构包跳过 luci
             [ "$pkg_type" = "arch" ] && case "$filename" in luci-*) continue ;; esac
+            
             local filename_lower=$(to_lower "$filename")
             local matched=0
+            
+            # 根据类型判断是否匹配
             case "$pkg_type" in
                 arch)
                     echo "$filename_lower" | grep -q "$arch" && echo "$filename_lower" | grep -q "$app_name_lower" && matched=1
@@ -271,6 +284,8 @@ match_and_download() {
                     esac
                     ;;
             esac
+            
+            # 匹配成功则下载安装
             if [ $matched -eq 1 ]; then
                 [ "$pkg_type" = "arch" ] && log "  [$label] $filename (匹配: $arch)" || log "  [$label] $filename"
                 download_and_install_single "$filename" && success_count=$((success_count + 1))
@@ -279,6 +294,8 @@ match_and_download() {
         done
         return 1
     }
+    
+    # 依次查找三种包
     log "  查找架构包..."
     find_and_install "arch" "架构包"
     
@@ -367,7 +384,7 @@ run_install() {
     
     log "第三方源安装模式"
     log "包列表: $packages"
-    run_install
+    load_config || return 1
     INSTALLED_PACKAGES=""
     FAILED_PACKAGES=""
     for pkg in $packages; do
@@ -750,7 +767,7 @@ run_update() {
     log "OpenWrt 自动更新脚本 v${SCRIPT_VERSION}"
     log "开始执行 (PID: $$)"
     log "日志文件: $LOG_FILE"
-    run_install
+    load_config || return 1
     echo "$PKG_INSTALL" | grep -q "opkg" && PKG_UPDATE="opkg update" || PKG_UPDATE="apk update"
     log "系统架构: $SYS_ARCH"
     log "包管理器: $(echo $PKG_INSTALL | awk '{print $1}')"
