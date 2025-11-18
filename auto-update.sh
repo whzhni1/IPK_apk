@@ -209,17 +209,22 @@ match_and_download() {
     local assets_json="$1" pkg_name="$2" platform="$3"
     local app_name=$(extract_app_name "$pkg_name")
     log "  应用名: $app_name"
+    
     extract_filenames "$assets_json" || {
         log "  ✗ 文件名提取失败，平台: $platform"
         return 1
     }
+    
     local all_files=$(get_all_filenames)
     [ -z "$all_files" ] && { 
         log "  ✗ 未找到任何 $PKG_EXT 文件，平台: $platform"
         return 1
     }
+    
     local file_count=$(echo "$all_files" | wc -l)
     log "  找到 $file_count 个 $PKG_EXT 文件"
+    
+    # 显示文件列表
     if [ "$file_count" -le 5 ]; then
         log "  文件列表:"
         echo "$all_files" | while read fname; do [ -n "$fname" ] && log "    - $fname"; done
@@ -228,61 +233,80 @@ match_and_download() {
         echo "$all_files" | head -5 | while read fname; do [ -n "$fname" ] && log "    - $fname"; done
         log "    ... 还有 $((file_count - 5)) 个文件"
     fi
+    
     local success_count=0 old_IFS="$IFS"
     local app_name_lower=$(to_lower "$app_name")
-    find_and_install() {
-        local pkg_type="$1" label="$2"
-        local found=0
+    
+    # 包类型列表：类型|日志名称
+    local types="arch|架构包 luci|Luci包 lang|语言包"
+    
+    for type_info in $types; do
+        local pkg_type=$(echo "$type_info" | cut -d'|' -f1)
+        local label=$(echo "$type_info" | cut -d'|' -f2)
+        
+        log "  查找${label}..."
+        
+        # 架构包需要遍历架构
         if [ "$pkg_type" = "arch" ]; then
+            local arch_found=0
             for arch in $ARCH_FALLBACK; do
-                [ $found -eq 1 ] && break
-                search_files "$pkg_type" "$label" "$arch" && found=1
+                [ $arch_found -eq 1 ] && break
+                
+                IFS=$'\n'
+                for filename in $all_files; do
+                    IFS="$old_IFS"
+                    [ -z "$filename" ] && continue
+                    case "$filename" in luci-*) continue ;; esac
+                    
+                    local filename_lower=$(to_lower "$filename")
+                    if echo "$filename_lower" | grep -q "$arch" && echo "$filename_lower" | grep -q "$app_name_lower"; then
+                        log "  [$label] $filename (匹配: $arch)"
+                        download_and_install_single "$filename" && success_count=$((success_count + 1)) && arch_found=1
+                        break
+                    fi
+                done
+                IFS="$old_IFS"
             done
         else
-            search_files "$pkg_type" "$label"
-        fi
-    }
-    search_files() {
-        local pkg_type="$1" label="$2" arch="$3"
-        IFS=$'\n'
-        for filename in $all_files; do
+            # luci 和 lang 直接查找
+            IFS=$'\n'
+            for filename in $all_files; do
+                IFS="$old_IFS"
+                [ -z "$filename" ] && continue
+                
+                local filename_lower=$(to_lower "$filename")
+                local matched=0
+                
+                case "$pkg_type" in
+                    luci)
+                        case "$filename_lower" in
+                            luci-app-${app_name_lower}_*${PKG_EXT}|luci-app-${app_name_lower}-*${PKG_EXT}|\
+                            luci-theme-${app_name_lower}_*${PKG_EXT}|luci-theme-${app_name_lower}-*${PKG_EXT})
+                                matched=1 ;;
+                        esac
+                        ;;
+                    lang)
+                        case "$filename_lower" in
+                            *luci-i18n-*${app_name_lower}*zh-cn*${PKG_EXT}|*luci-i18n-*${app_name_lower}*zh_cn*${PKG_EXT})
+                                matched=1 ;;
+                        esac
+                        ;;
+                esac
+                
+                if [ $matched -eq 1 ]; then
+                    log "  [$label] $filename"
+                    download_and_install_single "$filename" && success_count=$((success_count + 1))
+                    break
+                fi
+            done
             IFS="$old_IFS"
-            [ -z "$filename" ] && continue
-            [ "$pkg_type" = "arch" ] && case "$filename" in luci-*) continue ;; esac
-            local filename_lower=$(to_lower "$filename")
-            local matched=0
-            case "$pkg_type" in
-                arch)
-                    echo "$filename_lower" | grep -q "$arch" && echo "$filename_lower" | grep -q "$app_name_lower" && matched=1
-                    ;;
-                luci)
-                    case "$filename_lower" in
-                        luci-app-${app_name_lower}_*${PKG_EXT}|luci-app-${app_name_lower}-*${PKG_EXT}|\
-                        luci-theme-${app_name_lower}_*${PKG_EXT}|luci-theme-${app_name_lower}-*${PKG_EXT})
-                            matched=1 ;;
-                    esac
-                    ;;
-                lang)
-                    case "$filename_lower" in
-                        *luci-i18n-*${app_name_lower}*zh-cn*${PKG_EXT}|*luci-i18n-*${app_name_lower}*zh_cn*${PKG_EXT})
-                            matched=1 ;;
-                    esac
-                    ;;
-            esac
-            if [ $matched -eq 1 ]; then
-                [ "$pkg_type" = "arch" ] && log "  [$label] $filename (匹配: $arch)" || log "  [$label] $filename"
-                download_and_install_single "$filename" && success_count=$((success_count + 1))
-                return 0
-            fi
-        done
-        return 1
-    }
-    find_and_install "arch" "架构包"
-    find_and_install "luci" "Luci包"
-    find_and_install "lang" "语言包"
+        fi
+    done
+    
     IFS="$old_IFS"
     ASSETS_JSON_CACHE=""
     ASSET_FILENAMES=""
+    
     if [ $success_count -gt 0 ]; then
         log "  ✓ 成功安装 $success_count 个文件"
         return 0
