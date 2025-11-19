@@ -101,7 +101,8 @@ extract_filenames() {
 
 # 获取下载地址
 get_download_url() {
-    echo "$ASSETS_JSON_CACHE" | grep -o "https://[^\"]*$1" | head -1 | sed 's|api\.gitcode\.com/|gitcode.com/|'
+    local filename="$1"
+    echo "$ASSETS_JSON_CACHE" | grep -o "https://[^\"]*$filename" | head -1 | sed 's|https://api\.gitcode\.com/|https://gitcode.com/|'
 }
 
 # 下载并安装
