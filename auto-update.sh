@@ -280,16 +280,18 @@ classify_packages() {
     local third_lower=$(to_lower "$THIRD_PARTY_INSTALLED")
     local excluded=0
     
+    [ -n "$THIRD_PARTY_INSTALLED" ] && log "第三方记录: $THIRD_PARTY_INSTALLED"
+    
     for pkg in $all; do
-        echo " $third_lower " | grep -q " $(to_lower "$pkg") " && {
-            NON_OFFICIAL_PACKAGES="$NON_OFFICIAL_PACKAGES $pkg"
-        } || is_excluded "$pkg" && {
-            excluded=$((excluded+1))
-        } || $PKG_LIST "$pkg" 2>/dev/null | grep -q "^$pkg " && {
-            OFFICIAL_PACKAGES="$OFFICIAL_PACKAGES $pkg"
-        } || {
-            NON_OFFICIAL_PACKAGES="$NON_OFFICIAL_PACKAGES $pkg"
-        }
+        case " $third_lower " in
+            *" $(to_lower "$pkg") "*)
+                NON_OFFICIAL_PACKAGES="$NON_OFFICIAL_PACKAGES $pkg" ;;
+            *)
+                is_excluded "$pkg" && { excluded=$((excluded+1)); continue; }
+                $PKG_LIST "$pkg" 2>/dev/null | grep -q "^$pkg " && \
+                    OFFICIAL_PACKAGES="$OFFICIAL_PACKAGES $pkg" || \
+                    NON_OFFICIAL_PACKAGES="$NON_OFFICIAL_PACKAGES $pkg" ;;
+        esac
     done
     
     log "包分类: 官方 $(echo $OFFICIAL_PACKAGES|wc -w), 第三方 $(echo $NON_OFFICIAL_PACKAGES|wc -w), 排除 $excluded"
@@ -316,6 +318,7 @@ update_official() {
                 OFFICIAL_FAILED=$((OFFICIAL_FAILED+1))
             }
         } || {
+            log "○ $pkg: $cur → $cur"
             OFFICIAL_SKIPPED=$((OFFICIAL_SKIPPED+1))
         }
     done
@@ -327,9 +330,15 @@ update_official() {
 update_thirdparty() {
     log "步骤: 更新第三方源"
     
+    [ -z "$NON_OFFICIAL_PACKAGES" ] && { log "无第三方包"; return; }
+    
+    local third_lower=$(to_lower "$THIRD_PARTY_INSTALLED")
     local check=""
+    
     for pkg in $NON_OFFICIAL_PACKAGES; do
-        case "$pkg" in luci-app-*|luci-theme-*|lucky) check="$check $pkg" ;; esac
+        case " $third_lower " in
+            *" $(to_lower "$pkg") "*) check="$check $pkg" ;;
+        esac
     done
     
     [ -z "$check" ] && { log "无第三方插件"; return; }
