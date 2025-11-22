@@ -8,7 +8,7 @@ PUSH_TITLE="$DEVICE_MODEL 插件更新通知"
 EXCLUDE_PACKAGES="kernel kmod- base-files busybox lib opkg uclient-fetch ca-bundle ca-certificates luci-app-lucky luci-app-openlist2 luci-app-tailscale"
 
 # 批量初始化变量
-for var in ASSETS_JSON_CACHE INSTALLED_LIST FAILED_LIST OFFICIAL_PACKAGES NON_OFFICIAL_PACKAGES OFFICIAL_DETAIL THIRDPARTY_DETAIL; do
+for var in ASSETS_JSON_CACHE INSTALLED_LIST OFFICIAL_PACKAGES NON_OFFICIAL_PACKAGES OFFICIAL_DETAIL THIRDPARTY_DETAIL; do
     eval "$var=''"
 done
 
@@ -112,13 +112,13 @@ find_and_install() {
         }
     done
 
-    local file=$(echo "$all_files" | grep -E "^luci-(app|theme)-${al}[-_]" | head -1)
+    local file=$(echo "$all_files" | grep -E "^luci-(app|theme)-${app}[-_]" | head -1)
     [ -n "$file" ] && {
         log "  [Luci包] $file"
         download_and_install "$file" && count=$((count+1))
     }
 
-    local file=$(echo "$all_files" | grep "zh-cn" | grep -i "$al" | head -1)
+    local file=$(echo "$all_files" | grep "zh-cn" | grep -i "$app" | head -1)
     [ -n "$file" ] && {
         log "  [语言包] $file"
         download_and_install "$file" && count=$((count+1))
@@ -214,9 +214,8 @@ run_install() {
             THIRDPARTY_UPDATED=$((THIRDPARTY_UPDATED+1))
             INSTALLED_LIST="$INSTALLED_LIST $pkg"
         else
-            THIRDPARTY_DETAIL="${THIRDPARTY_DETAIL}\n?$pkg"
+            THIRDPARTY_DETAIL="${THIRDPARTY_DETAIL}\n✗ $pkg"
             THIRDPARTY_FAILED=$((THIRDPARTY_FAILED+1))
-            FAILED_LIST="$FAILED_LIST $pkg"
         fi
     done
     
@@ -232,11 +231,6 @@ run_install() {
     send_push "$DEVICE_MODEL - 包安装结果" "$REPORT"
     
     [ $THIRDPARTY_FAILED -eq 0 ]
-}
-
-# update 模式检查已安装
-is_installed() {
-    $PKG_LIST_INSTALLED 2>/dev/null | grep -q "^$1 "
 }
 
 is_excluded() {
@@ -302,7 +296,7 @@ update_official() {
                 install_lang "$pkg"
             } || {
                 log "✗ 升级失败"
-                OFFICIAL_DETAIL="${OFFICIAL_DETAIL}\n?$pkg: $cur → $new"
+                OFFICIAL_DETAIL="${OFFICIAL_DETAIL}\n✗ $pkg: $cur → $new"
                 OFFICIAL_FAILED=$((OFFICIAL_FAILED+1))
             }
         } || {
