@@ -13,7 +13,7 @@ jobs:
           # OpenClash
           - github_owner: "vernesong"
             github_repo: "OpenClash"
-            local_name: "luci-app-OpenClash"
+            local_name: "luci-app-openclash"
             
           # luci-app-tailscale
           - github_owner: "whzhni1"
