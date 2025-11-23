@@ -79,7 +79,7 @@ upload_file_to_project() {
     local file="$1"
     local filename=$(basename "$file")
     
-    log_debug "上传文件到项目: $filename"
+    log_debug "上传文件到项目: $filename" >&2
     
     # 上传文件
     local upload_response=$(curl -s -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
@@ -90,17 +90,18 @@ upload_file_to_project() {
     local relative_url=$(echo "$upload_response" | jq -r '.url // empty')
     
     if [ -z "$relative_url" ] || [ "$relative_url" = "null" ]; then
-        log_error "文件上传失败: $filename"
-        log_debug "响应: $upload_response"
+        log_error "文件上传失败: $filename" >&2
+        log_debug "响应: $upload_response" >&2
         return 1
     fi
     
     # 构造完整 URL
     local full_url="${GITLAB_URL}/${REPO_PATH}${relative_url}"
     
-    log_debug "文件 URL: $full_url"
+    log_debug "文件 URL: $full_url" >&2
+    log_debug "文件名: $filename" >&2
     
-    # 返回完整 URL 和文件名
+    # 只输出结果到 stdout（格式：URL|文件名）
     echo "${full_url}|${filename}"
     return 0
 }
@@ -114,8 +115,9 @@ upload_file_to_release() {
     
     # 上传文件到项目并获取 URL
     local result=$(upload_file_to_project "$file")
+    local exit_code=$?
     
-    if [ $? -ne 0 ] || [ -z "$result" ]; then
+    if [ $exit_code -ne 0 ] || [ -z "$result" ]; then
         log_error "上传失败"
         return 1
     fi
@@ -131,7 +133,13 @@ create_release_link() {
     local file_url="$1"
     local file_name="$2"
     
-    log_debug "关联文件到 Release: $file_name"
+    log_debug "关联文件: $file_name -> $file_url"
+    
+    # 验证参数
+    if [ -z "$file_url" ] || [ -z "$file_name" ]; then
+        log_error "参数错误: URL='$file_url', Name='$file_name'"
+        return 1
+    fi
     
     local link_payload=$(jq -n \
         --arg name "$file_name" \
@@ -141,6 +149,8 @@ create_release_link() {
             url: $url,
             link_type: "package"
         }')
+    
+    log_debug "Payload: $link_payload"
     
     local response=$(api_post "/projects/${PROJECT_ID}/releases/${TAG_NAME}/assets/links" \
         "$link_payload")
@@ -307,7 +317,6 @@ cleanup_old_tags() {
             sleep 0.5
         fi
 
-        # 删除标签
         log_debug "  删除标签..."
         local tag_encoded=$(urlencode "$tag")
         local http_code=$(api_delete "/projects/${PROJECT_ID}/repository/tags/${tag_encoded}")
@@ -345,7 +354,7 @@ create_release() {
     local tag_check=$(api_get "/projects/${PROJECT_ID}/repository/tags/${tag_encoded}")
     
     if ! echo "$tag_check" | jq -e '.name' > /dev/null 2>&1; then
-        # 创建标签
+
         log_debug "创建标签..."
         local tag_payload=$(jq -n \
             --arg tag "$TAG_NAME" \
@@ -433,7 +442,12 @@ upload_files() {
         
         local linked=0
         for asset in "${RELEASE_ASSETS[@]}"; do
-            IFS='|' read -r url name <<< "$asset"
+
+            local url=$(echo "$asset" | cut -d'|' -f1)
+            local name=$(echo "$asset" | cut -d'|' -f2-)
+            
+            log_debug "解析结果: URL='$url', Name='$name'"
+            
             if create_release_link "$url" "$name"; then
                 linked=$((linked + 1))
             fi
