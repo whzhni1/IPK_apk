@@ -32,7 +32,7 @@ load_config() {
         eval "[ -z \"\$$key\" ]" && { log "✗ 缺少配置: $key"; return 1; }
     done
     
-    log "✓ 配置已加载"
+    log "√ 配置已加载"
 }
 
 # 解析 Git 信息
@@ -75,7 +75,7 @@ validate_file() {
         return 1
     }
     
-    log "✓ 文件有效: $(format_size $size)"
+    log "√ 文件有效: $(format_size $size)"
 }
 
 # API 调用
@@ -145,7 +145,7 @@ download_and_install() {
     
     log "    安装: $file"
     $PKG_INSTALL "/tmp/$file" >>"$LOG_FILE" 2>&1 && {
-        log "✓ 安装成功"
+        log "√ 安装成功"
         rm -f "/tmp/$file"
         return 0
     } || {
@@ -180,7 +180,7 @@ process_package() {
         echo "$json" | grep -q '"assets"' || { log "✗ 无资源文件"; continue; }
 
         ASSETS_JSON_CACHE="$json"
-        find_and_install "$app" && { log "✓ 安装成功"; return 0; }
+        find_and_install "$app" && { log "√ 安装成功"; return 0; }
         log "✗ 无匹配文件"
     done
     
@@ -198,7 +198,7 @@ save_third_party() {
         sed -i "s|^THIRD_PARTY_INSTALLED=.*|THIRD_PARTY_INSTALLED=\"$new\"|" "$CONFIG_FILE" || \
         printf '\n# 第三方源安装的包\nTHIRD_PARTY_INSTALLED="%s"\n' "$new" >> "$CONFIG_FILE"
     
-    log "✓ 配置已更新"
+    log "√ 配置已更新"
 }
 
 # install 模式
@@ -210,7 +210,7 @@ run_install() {
     for pkg in "$@"; do
         log ""
         if process_package "$pkg" 0; then
-            THIRDPARTY_DETAIL="${THIRDPARTY_DETAIL}\n√$pkg"
+            THIRDPARTY_DETAIL="${THIRDPARTY_DETAIL}\n√ $pkg"
             THIRDPARTY_UPDATED=$((THIRDPARTY_UPDATED+1))
             INSTALLED_LIST="$INSTALLED_LIST $pkg"
         else
@@ -255,14 +255,14 @@ install_lang() {
     esac
     
     $PKG_LIST "$lang" 2>/dev/null | grep -q "^$lang " || return
-    $PKG_INSTALL "$lang" >>"$LOG_FILE" 2>&1 && log "✓ $lang 安装成功"
+    $PKG_INSTALL "$lang" >>"$LOG_FILE" 2>&1 && log "√ $lang 安装成功"
 }
 
 # 分类包
 classify_packages() {
     log "步骤: 分类已安装的包"
     $PKG_UPDATE >>"$LOG_FILE" 2>&1 || { log "✗ 更新源失败"; return 1; }
-    log "✓ 软件源已更新"
+    log "√ 软件源已更新"
     
     local all=$($PKG_LIST_INSTALLED 2>/dev/null | awk '{print $1}' | grep -v "^luci-i18n-")
     
@@ -290,8 +290,8 @@ update_official() {
         [ "$cur" != "$new" ] && [ -n "$new" ] && {
             log "↻ $pkg: $cur → $new"
             $PKG_INSTALL "$pkg" >>"$LOG_FILE" 2>&1 && {
-                log "✓ 升级成功"
-                OFFICIAL_DETAIL="${OFFICIAL_DETAIL}\n√$pkg: $cur → $new"
+                log "√ 升级成功"
+                OFFICIAL_DETAIL="${OFFICIAL_DETAIL}\n√ $pkg: $cur → $new"
                 OFFICIAL_UPDATED=$((OFFICIAL_UPDATED+1))
                 install_lang "$pkg"
             } || {
@@ -324,12 +324,12 @@ update_thirdparty() {
         case $? in
             0) 
                 local new=$(get_version "$pkg" installed)
-                THIRDPARTY_DETAIL="${THIRDPARTY_DETAIL}\n[+]$pkg: $cur -> $new"
+                THIRDPARTY_DETAIL="${THIRDPARTY_DETAIL}\n√ $pkg: $cur → $new"
                 THIRDPARTY_UPDATED=$((THIRDPARTY_UPDATED+1)) 
                 ;;
             2) THIRDPARTY_SAME=$((THIRDPARTY_SAME+1)) ;;
             *) 
-                THIRDPARTY_DETAIL="${THIRDPARTY_DETAIL}\n[X]$pkg"
+                THIRDPARTY_DETAIL="${THIRDPARTY_DETAIL}\n✗ $pkg"
                 THIRDPARTY_FAILED=$((THIRDPARTY_FAILED+1)) 
                 ;;
         esac
@@ -356,7 +356,7 @@ check_script_update() {
         version_greater "$ver" "$SCRIPT_VERSION" && {
             log "↻ 发现新版本: $SCRIPT_VERSION → $ver"
             mv "$tmp" "$(readlink -f "$0")" && chmod +x "$(readlink -f "$0")" && {
-                log "✓ 更新成功，重启脚本"
+                log "√ 更新成功，重启脚本"
                 exec "$(readlink -f "$0")" "$@"
             }
         }
@@ -391,11 +391,11 @@ send_push() {
             local c=$(echo "$2" | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
             curl -s -X POST "$url" -H "Content-Type: application/json" \
                 -d "{\"token\":\"$token\",\"title\":\"$1\",\"content\":\"$c\",\"template\":\"txt\"}" | \
-                grep -q '"code":200' && log "✓ 推送成功"
+                grep -q '"code":200' && log "√ 推送成功"
             ;;
         *)
             curl -s -X POST "$url" -d "text=$1" -d "desp=$2" | \
-                grep -q '"errno":0\|"code":0' && log "✓ 推送成功"
+                grep -q '"errno":0\|"code":0' && log "√ 推送成功"
             ;;
     esac
 }
@@ -417,10 +417,10 @@ generate_report() {
     REPORT="脚本版本: $SCRIPT_VERSION\n时间: $(date '+%Y-%m-%d %H:%M:%S')\n\n"
     
     [ "$mode" != "install" ] && {
-        REPORT="${REPORT}官方源: ✓$OFFICIAL_UPDATED ○$OFFICIAL_SKIPPED ✗$OFFICIAL_FAILED${OFFICIAL_DETAIL}\n"
+        REPORT="${REPORT}官方源: √ $OFFICIAL_UPDATED ○ $OFFICIAL_SKIPPED ✗ $OFFICIAL_FAILED${OFFICIAL_DETAIL}\n"
     }
     
-    REPORT="${REPORT}第三方: ✓$THIRDPARTY_UPDATED ○$THIRDPARTY_SAME ✗$THIRDPARTY_FAILED${THIRDPARTY_DETAIL}\n"
+    REPORT="${REPORT}第三方:√ $THIRDPARTY_UPDATED ○ $THIRDPARTY_SAME ✗ $THIRDPARTY_FAILED${THIRDPARTY_DETAIL}\n"
     REPORT="${REPORT}⏰ 自动更新: $schedule\n\n详细日志: $LOG_FILE"
 }
 
@@ -443,7 +443,7 @@ run_update() {
         update_official
     }
     
-    log "✓ 更新完成"
+    log "√ 更新完成"
     generate_report "update"
     echo -e "$REPORT"
     send_push "$PUSH_TITLE" "$REPORT"
