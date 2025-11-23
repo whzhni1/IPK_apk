@@ -12,6 +12,7 @@ on:
 env:
   GITEE_USERNAME: whzhni
   GITCODE_USERNAME: whzhni
+  GITLAB_USERNAME: whzhni
   REPO: ipk_apk
   BRANCH: main
 
@@ -67,3 +68,29 @@ jobs:
           git add .
           git commit -m "同步 auto-update.sh 和 auto-setup 文件"
           git push gitcode ${{ env.BRANCH }} --force
+
+  # ========================================
+  # 阶段3: 同步到 GitLab
+  # ========================================
+  sync-to-gitlab:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出本仓库
+        uses: actions/checkout@v4
+
+      - name: 推送文件到 GitLab
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          mkdir sync-dir
+          cp auto-update.sh auto-setup sync-dir/
+
+          cd sync-dir
+          git init -b ${{ env.BRANCH }}
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git remote add gitlab https://oauth2:${GITLAB_TOKEN}@gitlab.com/${{ env.GITLAB_USERNAME }}/${{ env.REPO }}.git
+          git add .
+          git commit -m "同步 auto-update.sh 和 auto-setup 文件"
+          git push gitlab ${{ env.BRANCH }} --force
