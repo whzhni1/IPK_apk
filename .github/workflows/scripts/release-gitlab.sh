@@ -75,7 +75,7 @@ api_delete() {
         "${API_BASE}${endpoint}"
 }
 
-# 上传文件到 Package Registry（所有日志输出到 stderr）
+# 上传文件到 Package Registry
 upload_to_package_registry() {
     local file="$1"
     local filename=$(basename "$file")
@@ -103,7 +103,7 @@ upload_to_package_registry() {
         log_success "上传成功"
         log_debug "  下载链接: $download_url"
         
-        # 只输出 JSON 到 stdout
+        # 只输出 JSON 到 stdout（重要：不要有任何其他 echo！）
         jq -n \
             --arg name "$filename" \
             --arg url "$download_url" \
@@ -331,8 +331,8 @@ upload_files() {
         echo "" >&2
         log_info "[$(( uploaded + failed + 1 ))/${total}] $(basename "$file")"
         
-        # 上传到 Package Registry（输出到 stdout 的是 JSON）
-        local result=$(upload_to_package_registry "$file" 2>&1)
+        # 上传到 Package Registry（只捕获 stdout 的 JSON，日志直接输出到 stderr）
+        local result=$(upload_to_package_registry "$file")
         local exit_code=$?
         
         if [ $exit_code -eq 0 ] && [ -n "$result" ]; then
@@ -340,14 +340,12 @@ upload_files() {
             if echo "$result" | jq empty 2>/dev/null; then
                 uploaded=$((uploaded + 1))
                 
-                log_debug "  解析结果: $result"
-                
                 # 添加到 assets.links 数组
                 ASSETS_LINKS=$(echo "$ASSETS_LINKS" | jq --argjson item "$result" \
                     '. += [$item | {name: .name, url: .url, link_type: "package"}]')
             else
-                log_error "  返回了无效的 JSON"
-                log_debug "  输出: $result"
+                log_error "返回了无效的 JSON"
+                log_debug "输出: $result"
                 failed=$((failed + 1))
             fi
         else
@@ -364,6 +362,8 @@ upload_files() {
     else
         log_error "全部上传失败"
     fi
+    
+    log_debug "ASSETS_LINKS: $(echo "$ASSETS_LINKS" | jq -c .)"
 }
 
 create_release() {
@@ -390,7 +390,7 @@ create_release() {
                 local link=$(echo "$ASSETS_LINKS" | jq -c ".[$i]")
                 local name=$(echo "$link" | jq -r '.name')
                 
-                log_debug "  添加: $name"
+                log_debug "添加: $name"
                 
                 local response=$(api_post "/projects/${PROJECT_ID}/releases/${TAG_NAME}/assets/links" "$link")
                 
