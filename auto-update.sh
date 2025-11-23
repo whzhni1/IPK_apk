@@ -67,7 +67,7 @@ version_greater() {
 # 验证下载文件
 validate_file() {
     local file="$1" min="${2:-1024}"
-    [ ! -f "$file" ] || [ ! -s "$file" ] && { log "✗ 文件无效"; return 1; }
+    [ ! -f "$file" ] || [ ! -s "$file" ] && { log "⚠ 文件无效"; return 1; }
     
     local size=$(wc -c < "$file" | tr -d ' ')
     [ $size -lt $min ] && head -1 "$file" | grep -qi "<!DOCTYPE\|<html" && {
@@ -139,7 +139,7 @@ download_and_install() {
     [ -z "$url" ] && { log "✗ 无下载地址"; return 1; }
     
     log "    下载: $file"
-    curl -fsSL -o "/tmp/$file" "$url" || { log "✗ 下载失败"; return 1; }
+    curl -fsSL -o "/tmp/$file" "$url" || { log "⚠ 下载失败"; return 1; }
     
     validate_file "/tmp/$file" 10240 || { rm -f "/tmp/$file"; return 1; }
     
@@ -166,10 +166,10 @@ process_package() {
         log "  平台: $platform ($owner/$pkg)"
         
         local json=$(api_get_release "$platform" "$owner" "$pkg")
-        echo "$json" | grep -q '\[' || { log "✗ API调用失败"; continue; }
+        echo "$json" | grep -q '\[' || { log "⚠ API调用失败"; continue; }
         
         local ver=$(echo "$json" | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4)
-        [ -z "$ver" ] && { log "✗ 无版本信息"; continue; }
+        [ -z "$ver" ] && { log "⚠ 无版本信息"; continue; }
         log "  最新版本: $ver"
         
         if [ "$check_ver" = "1" ]; then
@@ -177,7 +177,7 @@ process_package() {
             log "  发现更新: $cur_ver → $ver"
         fi
         
-        echo "$json" | grep -q '"assets"' || { log "✗ 无资源文件"; continue; }
+        echo "$json" | grep -q '"assets"' || { log "⚠ 无资源文件"; continue; }
 
         ASSETS_JSON_CACHE="$json"
         find_and_install "$app" && { log "√ 安装成功"; return 0; }
