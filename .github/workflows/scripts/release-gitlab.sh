@@ -83,10 +83,7 @@ upload_to_package_registry() {
     
     log_info "上传: $filename ($filesize)"
     
-    # 上传到 Generic Package Registry
     local upload_url="${API_BASE}/projects/${PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${TAG_NAME}/${filename}"
-    
-    log_debug "  上传 URL: $upload_url"
     
     local response=$(curl -s -w "\n%{http_code}" \
         -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
@@ -101,9 +98,7 @@ upload_to_package_registry() {
         local download_url="${API_BASE}/projects/${PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${TAG_NAME}/${filename}"
         
         log_success "上传成功"
-        log_debug "  下载链接: $download_url"
         
-        # 只输出 JSON 到 stdout（重要：不要有任何其他 echo！）
         jq -n \
             --arg name "$filename" \
             --arg url "$download_url" \
@@ -267,28 +262,6 @@ cleanup_old_tags() {
         echo "" >&2
         log_warning "清理: $tag"
 
-        # 先删除 Release（如果存在）
-        log_debug "  检查并删除 Release..."
-        local release_check=$(api_get "/projects/${PROJECT_ID}/releases/${tag}")
-        if echo "$release_check" | jq -e '.tag_name' > /dev/null 2>&1; then
-            api_delete "/projects/${PROJECT_ID}/releases/${tag}" > /dev/null
-            log_debug "  Release 已删除"
-            sleep 0.5
-        fi
-
-        # 删除 Package（如果存在）
-        log_debug "  清理 Package..."
-        local packages_response=$(api_get "/projects/${PROJECT_ID}/packages?package_name=${PACKAGE_NAME}&package_version=${tag}")
-        local package_ids=$(echo "$packages_response" | jq -r '.[].id // empty')
-        
-        if [ -n "$package_ids" ]; then
-            while IFS= read -r pkg_id; do
-                [ -z "$pkg_id" ] && continue
-                api_delete "/projects/${PROJECT_ID}/packages/${pkg_id}" > /dev/null 2>&1
-                log_debug "  Package ID $pkg_id 已删除"
-            done <<< "$package_ids"
-        fi
-
         # 删除标签
         log_debug "  删除标签..."
         local tag_encoded=$(urlencode "$tag")
@@ -338,12 +311,6 @@ upload_files() {
         
         local filename=$(basename "$file")
         
-        if [ "$filename" = "README.md" ]; then
-            log_info "跳过 README.md（已存在于仓库目录）"
-            skipped=$((skipped + 1))
-            continue
-        fi
-        
         echo "" >&2
         log_info "[$(( uploaded + failed + 1 ))/$((total - skipped))] $filename"
         
@@ -371,10 +338,6 @@ upload_files() {
     
     echo "" >&2
     
-    if [ $skipped -gt 0 ]; then
-        log_info "已跳过 $skipped 个仓库文档"
-    fi
-    
     local target_count=$((total - skipped))
     if [ $uploaded -eq $target_count ]; then
         log_success "全部上传成功: $uploaded/$target_count"
@@ -383,8 +346,6 @@ upload_files() {
     else
         log_error "全部上传失败"
     fi
-    
-    log_debug "ASSETS_LINKS: $(echo "$ASSETS_LINKS" | jq -c .)"
 }
 
 create_release() {
@@ -410,8 +371,6 @@ create_release() {
             for ((i=0; i<$count; i++)); do
                 local link=$(echo "$ASSETS_LINKS" | jq -c ".[$i]")
                 local name=$(echo "$link" | jq -r '.name')
-                
-                log_debug "添加: $name"
                 
                 local response=$(api_post "/projects/${PROJECT_ID}/releases/${TAG_NAME}/assets/links" "$link")
                 
@@ -447,8 +406,7 @@ create_release() {
         local tag_response=$(api_post "/projects/${PROJECT_ID}/repository/tags" "$tag_payload")
         
         if ! echo "$tag_response" | jq -e '.name' > /dev/null 2>&1; then
-            log_error "创建标签失败"
-            log_debug "响应: $tag_response"
+            log_error "创建标签失败，响应: $tag_response"
             exit 1
         fi
         log_debug "标签创建成功"
@@ -469,9 +427,6 @@ create_release() {
             }
         }')
     
-    log_debug "Release Payload:"
-    log_debug "$(echo "$release_payload" | jq -c .)"
-    
     local release_response=$(api_post "/projects/${PROJECT_ID}/releases" "$release_payload")
     
     if echo "$release_response" | jq -e '.tag_name' > /dev/null 2>&1; then
@@ -480,8 +435,7 @@ create_release() {
         local assets_count=$(echo "$release_response" | jq '.assets.links | length')
         log_info "包含 $assets_count 个附件"
     else
-        log_error "创建 Release 失败"
-        log_debug "响应: $release_response"
+        log_error "创建 Release 失败，响应: $release_response"
         exit 1
     fi
 }
@@ -498,12 +452,6 @@ verify_release() {
         local assets=$(echo "$response" | jq '.assets.links | length')
         log_info "附件数量: $assets"
         
-        # 显示文件列表
-        if [ "$assets" -gt 0 ]; then
-            echo "" >&2
-            log_info "文件列表:"
-            echo "$response" | jq -r '.assets.links[] | "  • \(.name)\n    \(.url)"' >&2
-        fi
     else
         log_error "验证失败"
         exit 1
