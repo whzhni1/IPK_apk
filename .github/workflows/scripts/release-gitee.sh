@@ -135,15 +135,6 @@ cleanup_tags() {
 create_release() {
     log "步骤 3/4: 创建 Release (标签: $TAG_NAME)"
     
-    # 检查是否已存在
-    local releases=$(api GET "/repos/$REPO_PATH/releases")
-    RELEASE_ID=$(echo "$releases" | jq -r --arg tag "$TAG_NAME" '.[] | select(.tag_name == $tag) | .id // empty')
-    
-    if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
-        warn "Release 已存在 (ID: $RELEASE_ID)"
-        return
-    fi
-    
     # 获取最新 commit
     local commit=$(api GET "/repos/$REPO_PATH/commits" | jq -r '.[0].sha // empty')
     [ -z "$commit" ] || [ "$commit" = "null" ] && fatal "无法获取 commit"
