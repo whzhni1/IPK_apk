@@ -2,11 +2,10 @@
 
 set -e
 
-# 环境变量配置
+# 环境变量
 GITLAB_TOKEN="${GITLAB_TOKEN:-}"
 GITLAB_URL="${GITLAB_URL:-https://gitlab.com}"
 USERNAME="${USERNAME:-}"
-REPO_STATUS="1"
 REPO_NAME="${REPO_NAME:-}"
 REPO_DESC="${REPO_DESC:-GitLab Release Repository}"
 REPO_PRIVATE="${REPO_PRIVATE:-false}"
@@ -18,486 +17,208 @@ UPLOAD_FILES="${UPLOAD_FILES:-}"
 
 API_BASE="${GITLAB_URL}/api/v4"
 REPO_PATH="${USERNAME}/${REPO_NAME}"
-PROJECT_PATH_ENCODED=""
 PROJECT_ID=""
 PACKAGE_NAME="release-files"
-PLATFORM_TAG="[GitLab]"
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-CYAN='\033[0;36m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+ASSETS_LINKS="[]"
+TAG="[GitLab]"
 
-log_info() { echo -e "${CYAN}${PLATFORM_TAG}[INFO]${NC} $*" >&2; }
-log_success() { echo -e "${GREEN}${PLATFORM_TAG}[✓]${NC} $*" >&2; }
-log_warning() { echo -e "${YELLOW}${PLATFORM_TAG}[!]${NC} $*" >&2; }
-log_error() { echo -e "${RED}${PLATFORM_TAG}[✗]${NC} $*" >&2; }
-log_debug() { echo -e "${BLUE}${PLATFORM_TAG}[DEBUG]${NC} $*" >&2; }
+# 日志函数
+log() { echo -e "\033[0;36m${TAG}[INFO]\033[0m $*" >&2; }
+success() { echo -e "\033[0;32m${TAG}[✓]\033[0m $*" >&2; }
+warn() { echo -e "\033[1;33m${TAG}[!]\033[0m $*" >&2; }
+error() { echo -e "\033[0;31m${TAG}[✗]\033[0m $*" >&2; exit 1; }
 
-# URL 编码函数
-urlencode() {
-    local string="$1"
-    echo -n "$string" | jq -sRr @uri
+# API 调用
+api() {
+    local method="$1" endpoint="$2" data="${3:-}"
+    local args=(-s -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}")
+    
+    [ "$method" = "POST" ] && args+=(-X POST -H "Content-Type: application/json" -d "$data")
+    [ "$method" = "PATCH" ] && args+=(-X PATCH -H "Content-Type: application/json" -d "$data")
+    [ "$method" = "DELETE" ] && args+=(-X DELETE -o /dev/null -w "%{http_code}")
+    
+    curl "${args[@]}" "${API_BASE}${endpoint}"
 }
 
-# API 函数封装
-api_get() {
-    local endpoint="$1"
-    curl -s -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-        "${API_BASE}${endpoint}"
+# URL 编码
+urlencode() { echo -n "$1" | jq -sRr @uri; }
+
+# 检查配置
+check_env() {
+    [ -z "$GITLAB_TOKEN" ] && error "GITLAB_TOKEN 未设置"
+    [ -z "$USERNAME" ] || [ -z "$REPO_NAME" ] && error "USERNAME 或 REPO_NAME 未设置"
+    success "配置检查通过"
 }
 
-api_post() {
-    local endpoint="$1"
-    local data="$2"
-    curl -s -X POST \
-        -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-        -H "Content-Type: application/json" \
-        -d "$data" \
-        "${API_BASE}${endpoint}"
-}
-
-api_patch() {
-    local endpoint="$1"
-    local data="$2"
-    curl -s -X PATCH \
-        -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-        -H "Content-Type: application/json" \
-        -d "$data" \
-        "${API_BASE}${endpoint}"
-}
-
-api_delete() {
-    local endpoint="$1"
-    curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-        -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-        "${API_BASE}${endpoint}"
-}
-
-# 上传文件到 Package Registry
-upload_to_package_registry() {
-    local file="$1"
-    local filename=$(basename "$file")
-    local filesize=$(du -h "$file" | cut -f1)
+# 确保仓库存在
+ensure_repo() {
+    log "步骤 1/4: 检查仓库"
+    local encoded=$(urlencode "$REPO_PATH")
+    local resp=$(api GET "/projects/$encoded")
     
-    log_info "上传: $filename ($filesize)"
-    
-    local upload_url="${API_BASE}/projects/${PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${TAG_NAME}/${filename}"
-    
-    local response=$(curl -s -w "\n%{http_code}" \
-        -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-        --upload-file "$file" \
-        "$upload_url")
-    
-    local http_code=$(echo "$response" | tail -n1)
-    local body=$(echo "$response" | sed '$d')
-    
-    if [ "$http_code" = "201" ]; then
-        # 构造公开下载链接
-        local download_url="${API_BASE}/projects/${PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${TAG_NAME}/${filename}"
-        
-        log_success "上传成功"
-        
-        jq -n \
-            --arg name "$filename" \
-            --arg url "$download_url" \
-            '{name: $name, url: $url}'
-        
-        return 0
-    else
-        log_error "上传失败 (HTTP $http_code)"
-        log_debug "  响应: $body"
-        return 1
-    fi
-}
-
-# 核心功能函数
-check_token() {
-    echo "" >&2
-    log_info "检查环境配置"
-    
-    if [ -z "$GITLAB_TOKEN" ]; then
-        log_error "GITLAB_TOKEN 未设置"
-        exit 1
+    if echo "$resp" | jq -e '.id' >/dev/null 2>&1; then
+        PROJECT_ID=$(echo "$resp" | jq -r '.id')
+        local is_public=$(echo "$resp" | jq -r '.visibility == "public"')
+        success "仓库已存在 (ID: $PROJECT_ID, 公开: $is_public)"
+        [ "$is_public" = "true" ] && return 0 || return 1
     fi
     
-    if [ -z "$USERNAME" ] || [ -z "$REPO_NAME" ]; then
-        log_error "USERNAME 或 REPO_NAME 未设置"
-        exit 1
-    fi
+    warn "仓库不存在，创建中..."
+    local vis=$([ "$REPO_PRIVATE" = "false" ] && echo "public" || echo "private")
+    local payload=$(jq -n --arg n "$REPO_NAME" --arg d "$REPO_DESC" --arg v "$vis" \
+        '{name:$n, description:$d, visibility:$v, initialize_with_readme:false}')
     
-    PROJECT_PATH_ENCODED=$(urlencode "$REPO_PATH")
+    resp=$(api POST "/projects" "$payload")
+    PROJECT_ID=$(echo "$resp" | jq -r '.id // empty')
+    [ -z "$PROJECT_ID" ] && error "创建仓库失败: $resp"
     
-    log_success "Token 已配置"
-}
-
-ensure_repository() {
-    echo "" >&2
-    log_info "步骤 1/4: 检查仓库"
-
-    local response=$(api_get "/projects/${PROJECT_PATH_ENCODED}")
-
-    if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
-        PROJECT_ID=$(echo "$response" | jq -r '.id')
-        log_success "仓库已存在 (ID: ${PROJECT_ID})"
-        REPO_STATUS="0"
-        return 0
-    fi
-
-    log_warning "仓库不存在，创建中..."
-
-    # 确定可见性级别
-    local visibility="private"
-    if [ "$REPO_PRIVATE" = "false" ]; then
-        visibility="public"
-    fi
-
-    # 创建项目
-    local create_payload=$(jq -n \
-        --arg name "$REPO_NAME" \
-        --arg desc "$REPO_DESC" \
-        --arg vis "$visibility" \
-        '{
-            name: $name,
-            description: $desc,
-            visibility: $vis,
-            initialize_with_readme: false
-        }')
-
-    response=$(api_post "/projects" "$create_payload")
-
-    if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
-        PROJECT_ID=$(echo "$response" | jq -r '.id')
-        log_success "仓库创建成功 (ID: ${PROJECT_ID}, 可见性: ${visibility})"
-        sleep 3
-        
-        log_info "初始化仓库到分支: ${BRANCH}"
-
-        local sync_dir="${RUNNER_TEMP:-/tmp}/gitlab-sync-$$-${RANDOM}"
-        mkdir -p "$sync_dir"
-
-        local current_dir=$(pwd)
-
-        # 创建 README.md
-        cat > "$sync_dir/README.md" << EOF
+    success "仓库已创建 (ID: $PROJECT_ID, 可见性: $vis)"
+    
+    # 初始化仓库
+    log "初始化仓库..."
+    local tmp="${RUNNER_TEMP:-/tmp}/gitlab-$$"
+    mkdir -p "$tmp" && cd "$tmp"
+    
+    cat > README.md <<EOF
 # ${REPO_NAME}
 
 ${REPO_DESC}
 
 ## 📦 Release
-
-本仓库用于自动发布构建产物。
-
-## 📥 下载
-
-访问 [Releases](${GITLAB_URL}/${REPO_PATH}/-/releases) 页面查看和下载文件。
-
----
-
-**Last Updated:** $(date '+%Y-%m-%d %H:%M:%S %Z')
+本仓库用于自动发布构建产物。访问 [Releases](${GITLAB_URL}/${REPO_PATH}/-/releases) 下载文件。
 EOF
-
-        cd "$sync_dir"
-        
-        git init -b "${BRANCH}" -q
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-
-        local git_url="https://oauth2:${GITLAB_TOKEN}@${GITLAB_URL#https://}/${REPO_PATH}.git"
-        git remote add gitlab "$git_url"
-        
-        git add .
-        git commit -m "初始化仓库: 添加 README.md" -q
-        
-        if git push gitlab "${BRANCH}" --force 2>&1 | sed "s/${GITLAB_TOKEN}/***TOKEN***/g"; then
-            log_success "仓库初始化完成 (分支: ${BRANCH})"
-        else
-            log_error "初始化失败"
-            cd "$current_dir"
-            rm -rf "$sync_dir"
-            exit 1
-        fi
-
-        cd "$current_dir"
-        rm -rf "$sync_dir"
-
-    else
-        log_error "仓库创建失败"
-        log_debug "响应: $response"
-        exit 1
-    fi
+    
+    git init -b "$BRANCH" -q
+    git config user.name "github-actions[bot]"
+    git config user.email "github-actions[bot]@users.noreply.github.com"
+    git remote add origin "https://oauth2:${GITLAB_TOKEN}@${GITLAB_URL#https://}/${REPO_PATH}.git"
+    git add . && git commit -m "Initial commit" -q
+    git push origin "$BRANCH" --force 2>&1 | sed "s/${GITLAB_TOKEN}/***TOKEN***/g" || error "初始化失败"
+    
+    cd - >/dev/null && rm -rf "$tmp"
+    success "仓库初始化完成"
+    [ "$vis" = "public" ] && return 0 || return 1
 }
 
-cleanup_old_tags() {
-    echo "" >&2
-    log_info "步骤 2/4: 清理旧标签"
-
-    local deleted_count=0
-
-    # 获取所有标签
-    log_debug "获取标签列表..."
-    local tags_response=$(api_get "/projects/${PROJECT_ID}/repository/tags")
-
-    if ! echo "$tags_response" | jq -e '.[0]' > /dev/null 2>&1; then
-        log_info "没有旧标签"
-        return 0
-    fi
-
-    local tags=$(echo "$tags_response" | jq -r '.[].name' 2>/dev/null)
-
-    if [ -z "$tags" ]; then
-        log_info "没有旧标签"
-        return 0
-    fi
-
-    # 遍历删除
+# 清理旧标签
+cleanup_tags() {
+    log "步骤 2/4: 清理旧标签"
+    local tags=$(api GET "/projects/$PROJECT_ID/repository/tags" | jq -r '.[].name // empty')
+    
+    [ -z "$tags" ] && { log "无需清理"; return; }
+    
+    local count=0
     while IFS= read -r tag; do
-        [ -z "$tag" ] || [ "$tag" = "$TAG_NAME" ] && continue
-
-        if ! echo "$tag" | grep -qE '^(v[0-9]|[0-9])'; then
-            continue
-        fi
-
-        echo "" >&2
-        log_warning "清理: $tag"
-
-        # 删除标签
-        log_debug "  删除标签..."
-        local tag_encoded=$(urlencode "$tag")
-        local http_code=$(api_delete "/projects/${PROJECT_ID}/repository/tags/${tag_encoded}")
-
-        if [ "$http_code" = "204" ] || [ "$http_code" = "200" ]; then
-            log_success "  ✓ 已删除"
-            deleted_count=$((deleted_count + 1))
-        else
-            log_error "  ✗ 删除失败 (HTTP $http_code)"
-        fi
-
-        sleep 1
+        [ -z "$tag" ] || [ "$tag" = "$TAG_NAME" ] || ! echo "$tag" | grep -qE '^(v[0-9]|[0-9])' && continue
+        
+        warn "清理: $tag"
+        local code=$(api DELETE "/projects/$PROJECT_ID/repository/tags/$(urlencode "$tag")")
+        [ "$code" = "204" ] || [ "$code" = "200" ] && success "  已删除" && ((count++)) || warn "  删除失败"
+        sleep 0.5
     done <<< "$tags"
-
-    echo "" >&2
-    [ $deleted_count -gt 0 ] && log_success "已清理 $deleted_count 个旧版本" || log_info "没有需要清理的版本"
+    
+    [ $count -gt 0 ] && success "已清理 $count 个旧版本" || log "无需清理"
 }
 
+# 上传文件
 upload_files() {
-    echo "" >&2
-    log_info "步骤 3/4: 上传文件到 Package Registry"
+    log "步骤 3/4: 上传文件"
+    [ -z "$UPLOAD_FILES" ] && { log "无文件需要上传"; return; }
     
-    if [ -z "$UPLOAD_FILES" ]; then
-        log_info "没有文件需要上传"
-        return 0
-    fi
+    local uploaded=0 failed=0
+    IFS=' ' read -ra files <<< "$UPLOAD_FILES"
     
-    local uploaded=0
-    local failed=0
-    local skipped=0
-    
-    # 用于存储 assets.links 的 JSON 数组
-    ASSETS_LINKS="[]"
-    
-    IFS=' ' read -ra FILES <<< "$UPLOAD_FILES"
-    local total=${#FILES[@]}
-    
-    for file in "${FILES[@]}"; do
+    for file in "${files[@]}"; do
         [ -z "$file" ] && continue
+        [ ! -f "$file" ] && { warn "文件不存在: $file"; ((failed++)); continue; }
         
-        if [ ! -f "$file" ]; then
-            log_warning "文件不存在: $file"
-            failed=$((failed + 1))
-            continue
-        fi
+        local name=$(basename "$file")
+        log "[$((uploaded+failed+1))/${#files[@]}] $name ($(du -h "$file" | cut -f1))"
         
-        local filename=$(basename "$file")
+        local url="${API_BASE}/projects/$PROJECT_ID/packages/generic/$PACKAGE_NAME/$TAG_NAME/$name"
+        local resp=$(curl -s -w "\n%{http_code}" -H "PRIVATE-TOKEN: $GITLAB_TOKEN" --upload-file "$file" "$url")
+        local code=$(echo "$resp" | tail -n1)
         
-        echo "" >&2
-        log_info "[$(( uploaded + failed + 1 ))/$((total - skipped))] $filename"
-        
-        # 上传到 Package Registry
-        local result=$(upload_to_package_registry "$file")
-        local exit_code=$?
-        
-        if [ $exit_code -eq 0 ] && [ -n "$result" ]; then
-            # 验证返回的是有效 JSON
-            if echo "$result" | jq empty 2>/dev/null; then
-                uploaded=$((uploaded + 1))
-                
-                # 添加到 assets.links 数组
-                ASSETS_LINKS=$(echo "$ASSETS_LINKS" | jq --argjson item "$result" \
-                    '. += [$item | {name: .name, url: .url, link_type: "package"}]')
-            else
-                log_error "返回了无效的 JSON"
-                log_debug "输出: $result"
-                failed=$((failed + 1))
-            fi
+        if [ "$code" = "201" ]; then
+            success "上传成功"
+            local dl_url="${API_BASE}/projects/$PROJECT_ID/packages/generic/$PACKAGE_NAME/$TAG_NAME/$name"
+            ASSETS_LINKS=$(echo "$ASSETS_LINKS" | jq --arg n "$name" --arg u "$dl_url" \
+                '. += [{name:$n, url:$u, link_type:"package"}]')
+            ((uploaded++))
         else
-            failed=$((failed + 1))
+            error "上传失败 (HTTP $code)"
+            ((failed++))
         fi
     done
     
-    echo "" >&2
-    
-    local target_count=$((total - skipped))
-    if [ $uploaded -eq $target_count ]; then
-        log_success "全部上传成功: $uploaded/$target_count"
-    elif [ $uploaded -gt 0 ]; then
-        log_warning "部分上传成功: $uploaded/$target_count"
-    else
-        log_error "全部上传失败"
-    fi
+    [ $uploaded -eq ${#files[@]} ] && success "全部上传成功: $uploaded/${#files[@]}" || warn "部分成功: $uploaded/${#files[@]}"
 }
 
+# 创建 Release
 create_release() {
-    echo "" >&2
-    log_info "步骤 4/4: 创建 Release"
-    log_info "标签: ${TAG_NAME}"
-    log_info "标题: ${RELEASE_TITLE}"
+    log "步骤 4/4: 创建 Release"
+    log "标签: $TAG_NAME"
     
-    # 检查 Release 是否已存在
-    local existing_release=$(api_get "/projects/${PROJECT_ID}/releases/${TAG_NAME}")
-    
-    if echo "$existing_release" | jq -e '.tag_name' > /dev/null 2>&1; then
-        log_warning "Release 已存在，将更新..."
+    # 检查是否已存在
+    local existing=$(api GET "/projects/$PROJECT_ID/releases/$TAG_NAME")
+    if echo "$existing" | jq -e '.tag_name' >/dev/null 2>&1; then
+        warn "Release 已存在，添加文件..."
+        [ "$ASSETS_LINKS" = "[]" ] && return
         
-        # 如果有新文件，更新 Release
-        if [ "$ASSETS_LINKS" != "[]" ]; then
-            log_info "添加新的文件链接..."
-            
-            # 逐个添加文件链接
-            local count=$(echo "$ASSETS_LINKS" | jq 'length')
-            local added=0
-            
-            for ((i=0; i<$count; i++)); do
-                local link=$(echo "$ASSETS_LINKS" | jq -c ".[$i]")
-                local name=$(echo "$link" | jq -r '.name')
-                
-                local response=$(api_post "/projects/${PROJECT_ID}/releases/${TAG_NAME}/assets/links" "$link")
-                
-                if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
-                    added=$((added + 1))
-                    log_success "  ✓ $name"
-                else
-                    log_warning "  ✗ $name"
-                fi
-            done
-            
-            log_success "已添加 $added/$count 个文件"
-        fi
-        
-        return 0
+        local count=$(echo "$ASSETS_LINKS" | jq 'length')
+        local added=0
+        for ((i=0; i<count; i++)); do
+            local link=$(echo "$ASSETS_LINKS" | jq -c ".[$i]")
+            api POST "/projects/$PROJECT_ID/releases/$TAG_NAME/assets/links" "$link" >/dev/null && ((added++))
+        done
+        success "已添加 $added/$count 个文件"
+        return
     fi
     
-    # 检查标签是否存在
-    local tag_encoded=$(urlencode "$TAG_NAME")
-    local tag_check=$(api_get "/projects/${PROJECT_ID}/repository/tags/${tag_encoded}")
-    
-    if ! echo "$tag_check" | jq -e '.name' > /dev/null 2>&1; then
-        # 创建标签
-        log_debug "创建标签..."
-        local tag_payload=$(jq -n \
-            --arg tag "$TAG_NAME" \
-            --arg ref "$BRANCH" \
-            '{
-                tag_name: $tag,
-                ref: $ref
-            }')
-        
-        local tag_response=$(api_post "/projects/${PROJECT_ID}/repository/tags" "$tag_payload")
-        
-        if ! echo "$tag_response" | jq -e '.name' > /dev/null 2>&1; then
-            log_error "创建标签失败，响应: $tag_response"
-            exit 1
-        fi
-        log_debug "标签创建成功"
+    # 创建标签（如果不存在）
+    local tag_check=$(api GET "/projects/$PROJECT_ID/repository/tags/$(urlencode "$TAG_NAME")")
+    if ! echo "$tag_check" | jq -e '.name' >/dev/null 2>&1; then
+        local tag_payload=$(jq -n --arg t "$TAG_NAME" --arg r "$BRANCH" '{tag_name:$t, ref:$r}')
+        api POST "/projects/$PROJECT_ID/repository/tags" "$tag_payload" >/dev/null || error "创建标签失败"
     fi
     
-    # 创建 Release（包含 assets.links）
-    local release_payload=$(jq -n \
-        --arg tag "$TAG_NAME" \
-        --arg name "$RELEASE_TITLE" \
-        --arg desc "$RELEASE_BODY" \
-        --argjson links "$ASSETS_LINKS" \
-        '{
-            tag_name: $tag,
-            name: $name,
-            description: $desc,
-            assets: {
-                links: $links
-            }
-        }')
+    # 创建 Release
+    local payload=$(jq -n --arg t "$TAG_NAME" --arg n "$RELEASE_TITLE" --arg d "$RELEASE_BODY" \
+        --argjson l "$ASSETS_LINKS" '{tag_name:$t, name:$n, description:$d, assets:{links:$l}}')
     
-    local release_response=$(api_post "/projects/${PROJECT_ID}/releases" "$release_payload")
+    local resp=$(api POST "/projects/$PROJECT_ID/releases" "$payload")
+    echo "$resp" | jq -e '.tag_name' >/dev/null 2>&1 || error "创建 Release 失败: $resp"
     
-    if echo "$release_response" | jq -e '.tag_name' > /dev/null 2>&1; then
-        log_success "Release 创建成功"
-        
-        local assets_count=$(echo "$release_response" | jq '.assets.links | length')
-        log_info "包含 $assets_count 个附件"
-    else
-        log_error "创建 Release 失败，响应: $release_response"
-        exit 1
-    fi
+    local count=$(echo "$resp" | jq '.assets.links | length')
+    success "Release 创建成功 (包含 $count 个附件)"
 }
 
-verify_release() {
-    echo "" >&2
-    log_info "验证 Release"
-    
-    local response=$(api_get "/projects/${PROJECT_ID}/releases/${TAG_NAME}")
-    
-    if echo "$response" | jq -e '.tag_name' > /dev/null 2>&1; then
-        log_success "验证成功"
-        
-        local assets=$(echo "$response" | jq '.assets.links | length')
-        log_info "附件数量: $assets"
-        
-    else
-        log_error "验证失败"
-        exit 1
-    fi
+# 设置为公开
+set_public() {
+    log "设置仓库为公开"
+    local resp=$(api PATCH "/projects/$PROJECT_ID" '{"visibility":"public"}')
+    echo "$resp" | jq -e '.visibility' | grep -q "public" && success "已设置为公开" || warn "设置失败，请手动操作"
 }
 
-set_public_repo() {
-    echo "" >&2
-    log_info "修改仓库为公开"
-
-    local update_payload=$(jq -n \
-        '{
-            visibility: "public"
-        }')
-
-    local update_response=$(api_patch "/projects/${PROJECT_ID}" "$update_payload")
-
-    if echo "$update_response" | jq -e '.visibility' | grep -q "public"; then
-        log_success "仓库已修改为公开"
-    else
-        log_warning "仓库仍然是私有，可能需要手动设置"
-        log_debug "响应: $update_response"
-    fi
-}
-
-# 主函数
+# 主流程
 main() {
-    echo "${PLATFORM_TAG} Release 发布脚本" >&2
-    echo "仓库: ${REPO_PATH}" >&2
-    echo "标签: ${TAG_NAME}" >&2
-
-    check_token
-    ensure_repository
-    cleanup_old_tags
+    echo "$TAG Release 发布脚本" >&2
+    echo "仓库: $REPO_PATH" >&2
+    echo "标签: $TAG_NAME" >&2
+    echo "" >&2
+    
+    check_env
+    ensure_repo
+    local is_public=$?
+    
+    cleanup_tags
     upload_files
     create_release
-    verify_release
-    if [ "$REPO_STATUS" != "0" ]; then
-      set_public_repo
-    fi
-
-    log_success "🎉 发布完成"
-    echo "" >&2
-    echo "Release 地址:" >&2
-    echo "  ${GITLAB_URL}/${REPO_PATH}/-/releases/${TAG_NAME}" >&2
-    echo "" >&2
+    
+    [ $is_public -ne 0 ] && set_public
+    
+    success "🎉 发布完成"
+    echo "Release 地址: ${GITLAB_URL}/${REPO_PATH}/-/releases/${TAG_NAME}" >&2
 }
 
 main "$@"
