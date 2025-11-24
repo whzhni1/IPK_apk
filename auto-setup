@@ -26,16 +26,16 @@ read_fetch_config() {
     
     log "读取引导配置..."
     
-    CRON_TIME=$(sed -n 's/^CRON_TIME="\([^"]*\)".*/\1/p' "$script" | head -1)
-    INSTALL_PRIORITY=$(sed -n 's/^INSTALL_PRIORITY=\([^#]*\).*/\1/p' "$script" | head -1 | tr -d ' "')
+    CRON_TIME=$(sed -n 's/^CRON_TIME="\([^"]*\)"/\1/p' "$script" | head -1)
+    INSTALL_PRIORITY=$(sed -n 's/^INSTALL_PRIORITY="\([^"]*\)"/\1/p' "$script" | head -1)
     
-    local pkg=$(sed -n 's/^PACKAGES="\([^"]*\)".*/\1/p' "$script" | head -1)
+    local pkg=$(sed -n 's/^PACKAGES="\([^"]*\)"/\1/p' "$script" | head -1)
     PACKAGES=$([ -n "$pkg" ] && echo "$pkg" || echo "$DEFAULT_PACKAGES")
     [ -z "$pkg" ] && log "  使用默认包列表"
     
     SCRIPT_URLS=$(sed -n '/^SCRIPT_URLS="/,/"$/p' "$script" | grep -v '^SCRIPT_URLS=' | grep -v '^"$')
 
-    log "√ 配置读取完成"
+    log "✓ 配置读取完成"
     log "  CRON_TIME: ${CRON_TIME:-未设置}"
     log "  INSTALL_PRIORITY: ${INSTALL_PRIORITY:-1}"
     log "  包数量: $(echo $PACKAGES | wc -w) 个"
