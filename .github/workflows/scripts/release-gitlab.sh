@@ -211,11 +211,11 @@ main() {
     
     check_env
     ensure_repo && is_public=0 || is_public=1
+    set +e
     cleanup_tags
-    if [ $? -eq 2 ]; then
-        echo "Release: ${GITLAB_URL}/${REPO_PATH}/-/releases/${TAG_NAME}" >&2
-        exit 0
-    fi
+    status=$?
+    set -e
+    [ $status -eq 2 ] && exit 0
     upload_files
     create_release
     [ $is_public -ne 0 ] && set_public
