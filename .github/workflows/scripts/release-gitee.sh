@@ -92,6 +92,13 @@ EOF
 cleanup_tags() {
     log "步骤 2/4: 清理旧标签"
     
+    local releases=$(api GET "/repos/$REPO_PATH/releases")
+    local current=$(echo "$releases" | jq -r --arg tag "$TAG_NAME" '.[] | select(.tag_name == $tag) | .id // empty')
+    if [ -n "$current" ] && [ "$current" != "null" ]; then
+        warn "Release 已存在 ($TAG_NAME)，跳过发布"
+        return 2
+    fi
+    
     local tmp="${RUNNER_TEMP:-/tmp}/gitee-cleanup-$$"
     mkdir -p "$tmp" && cd "$tmp"
     
@@ -100,8 +107,12 @@ cleanup_tags() {
     git config user.email "bot@gitee.com"
     git remote add origin "https://oauth2:${GITEE_TOKEN}@gitee.com/${REPO_PATH}.git"
     
-    local tags=$(api GET "/repos/$REPO_PATH/tags" | jq -r '.[].name // empty')
-    [ -z "$tags" ] && { log "无需清理"; cd - >/dev/null && rm -rf "$tmp"; return; }
+    local tags=$(echo "$releases" | jq -r '.[].name // empty')
+    if [ -z "$tags" ]; then
+        log "无需清理"
+        cd - >/dev/null && rm -rf "$tmp"
+        return 0
+    fi
     
     local count=0
     while IFS= read -r tag; do
@@ -112,14 +123,13 @@ cleanup_tags() {
         if git push origin ":refs/tags/$tag" 2>&1 | sed "s/${GITEE_TOKEN}/***TOKEN***/g" | grep -qv "error"; then
             success "  已删除"
             count=$((count + 1))
-        else
-            warn "  删除失败或不存在"
         fi
         sleep 0.5
     done <<< "$tags"
     
     cd - >/dev/null && rm -rf "$tmp"
     [ $count -gt 0 ] && success "已清理 $count 个旧版本" || log "无需清理"
+    return 0
 }
 
 create_release() {
@@ -216,6 +226,10 @@ main() {
     check_env
     ensure_repo && is_public=0 || is_public=1
     cleanup_tags
+    if [ $? -eq 2 ]; then
+        echo "Release: https://gitee.com/$REPO_PATH/releases/tag/$TAG_NAME" >&2
+        exit 0
+    fi
     create_release
     upload_files
     verify_release
