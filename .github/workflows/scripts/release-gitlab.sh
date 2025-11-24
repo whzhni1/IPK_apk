@@ -163,13 +163,11 @@ ensure_repository() {
         --arg name "$REPO_NAME" \
         --arg desc "$REPO_DESC" \
         --arg vis "$visibility" \
-        --arg branch "$BRANCH" \
         '{
             name: $name,
             description: $desc,
             visibility: $vis,
-            initialize_with_readme: false,
-            default_branch: $branch
+            initialize_with_readme: false
         }')
 
     response=$(api_post "/projects" "$create_payload")
@@ -178,21 +176,16 @@ ensure_repository() {
         PROJECT_ID=$(echo "$response" | jq -r '.id')
         log_success "仓库创建成功 (ID: ${PROJECT_ID}, 可见性: ${visibility})"
         sleep 3
-
-        # 初始化仓库
+        
         log_info "初始化仓库到分支: ${BRANCH}"
 
-        local temp_dir="${RUNNER_TEMP:-/tmp}/gitlab-init-$$-${RANDOM}"
-        mkdir -p "$temp_dir"
+        local sync_dir="${RUNNER_TEMP:-/tmp}/gitlab-sync-$$-${RANDOM}"
+        mkdir -p "$sync_dir"
 
         local current_dir=$(pwd)
-        cd "$temp_dir"
 
-        git init -q
-        git config user.name "GitLab Bot"
-        git config user.email "bot@gitlab.com"
-
-        cat > README.md << EOF
+        # 创建 README.md
+        cat > "$sync_dir/README.md" << EOF
 # ${REPO_NAME}
 
 ${REPO_DESC}
@@ -200,25 +193,39 @@ ${REPO_DESC}
 ## 📦 Release
 
 本仓库用于自动发布构建产物。
+
+## 📥 下载
+
+访问 [Releases](${GITLAB_URL}/${REPO_PATH}/-/releases) 页面查看和下载文件。
+
+---
+
+**Last Updated:** $(date '+%Y-%m-%d %H:%M:%S %Z')
 EOF
 
-        git add README.md
-        git commit -m "Initial commit" -q
+        cd "$sync_dir"
+        
+        git init -b "${BRANCH}" -q
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
 
         local git_url="https://oauth2:${GITLAB_TOKEN}@${GITLAB_URL#https://}/${REPO_PATH}.git"
-        git remote add origin "$git_url"
-
-        if git push -u origin HEAD:"${BRANCH}" 2>&1 | sed "s/${GITLAB_TOKEN}/***TOKEN***/g"; then
+        git remote add gitlab "$git_url"
+        
+        git add .
+        git commit -m "初始化仓库: 添加 README.md" -q
+        
+        if git push gitlab "${BRANCH}" --force 2>&1 | sed "s/${GITLAB_TOKEN}/***TOKEN***/g"; then
             log_success "仓库初始化完成 (分支: ${BRANCH})"
         else
             log_error "初始化失败"
             cd "$current_dir"
-            rm -rf "$temp_dir"
+            rm -rf "$sync_dir"
             exit 1
         fi
 
         cd "$current_dir"
-        rm -rf "$temp_dir"
+        rm -rf "$sync_dir"
 
     else
         log_error "仓库创建失败"
@@ -312,6 +319,7 @@ upload_files() {
     
     local uploaded=0
     local failed=0
+    local skipped=0
     
     # 用于存储 assets.links 的 JSON 数组
     ASSETS_LINKS="[]"
@@ -328,10 +336,18 @@ upload_files() {
             continue
         fi
         
-        echo "" >&2
-        log_info "[$(( uploaded + failed + 1 ))/${total}] $(basename "$file")"
+        local filename=$(basename "$file")
         
-        # 上传到 Package Registry（只捕获 stdout 的 JSON，日志直接输出到 stderr）
+        if [ "$filename" = "README.md" ]; then
+            log_info "跳过 README.md（已存在于仓库目录）"
+            skipped=$((skipped + 1))
+            continue
+        fi
+        
+        echo "" >&2
+        log_info "[$(( uploaded + failed + 1 ))/$((total - skipped))] $filename"
+        
+        # 上传到 Package Registry
         local result=$(upload_to_package_registry "$file")
         local exit_code=$?
         
@@ -355,10 +371,15 @@ upload_files() {
     
     echo "" >&2
     
-    if [ $uploaded -eq $total ]; then
-        log_success "全部上传成功: $uploaded/$total"
+    if [ $skipped -gt 0 ]; then
+        log_info "已跳过 $skipped 个仓库文档"
+    fi
+    
+    local target_count=$((total - skipped))
+    if [ $uploaded -eq $target_count ]; then
+        log_success "全部上传成功: $uploaded/$target_count"
     elif [ $uploaded -gt 0 ]; then
-        log_warning "部分上传成功: $uploaded/$total"
+        log_warning "部分上传成功: $uploaded/$target_count"
     else
         log_error "全部上传失败"
     fi
