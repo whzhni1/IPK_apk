@@ -175,6 +175,7 @@ jobs:
           - 构建时间: $(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S') (北京时间)
           - SDK 版本: OpenWrt 24.10 + SNAPSHOT"
           export RUNNER_TEMP="${{ runner.temp }}"
+          export BRANCH="main"
           
           echo "📦 准备发布 $(echo $FILES | wc -w) 个文件"
           
@@ -182,66 +183,29 @@ jobs:
           
           # GitCode
           [ -n "$GITCODE_TOKEN" ] && {
-            (
-              GITCODE_TOKEN="$GITCODE_TOKEN" \
-              USERNAME="$GITCODE_USERNAME" \
-              REPO_NAME="$REPO_NAME" \
-              TAG_NAME="$TAG_NAME" \
-              RELEASE_TITLE="$RELEASE_TITLE" \
-              RELEASE_BODY="$RELEASE_BODY" \
-              UPLOAD_FILES="$UPLOAD_FILES" \
-              BRANCH="${BRANCH:-main}" \
-              RUNNER_TEMP="$RUNNER_TEMP" \
-              .github/workflows/scripts/release-gitcode.sh && \
-              echo "0" > /tmp/gitcode.status || echo "1" > /tmp/gitcode.status
-            ) &
+            (export USERNAME="$GITCODE_USERNAME"; .github/workflows/scripts/release-gitcode.sh) &
             PIDS[gitcode]=$!
           }
           
           # Gitee
           [ -n "$GITEE_TOKEN" ] && {
-            (
-              GITEE_TOKEN="$GITEE_TOKEN" \
-              USERNAME="$GITEE_USERNAME" \
-              REPO_NAME="$REPO_NAME" \
-              TAG_NAME="$TAG_NAME" \
-              RELEASE_TITLE="$RELEASE_TITLE" \
-              RELEASE_BODY="$RELEASE_BODY" \
-              UPLOAD_FILES="$UPLOAD_FILES" \
-              BRANCH="${BRANCH:-main}" \
-              RUNNER_TEMP="$RUNNER_TEMP" \
-              .github/workflows/scripts/release-gitee.sh && \
-              echo "0" > /tmp/gitee.status || echo "1" > /tmp/gitee.status
-            ) &
+            (export USERNAME="$GITEE_USERNAME"; .github/workflows/scripts/release-gitee.sh) &
             PIDS[gitee]=$!
           }
           
           # GitLab
           [ -n "$GITLAB_TOKEN" ] && {
-            (
-              GITLAB_TOKEN="$GITLAB_TOKEN" \
-              USERNAME="$GITLAB_USERNAME" \
-              REPO_NAME="$REPO_NAME" \
-              TAG_NAME="$TAG_NAME" \
-              RELEASE_TITLE="$RELEASE_TITLE" \
-              RELEASE_BODY="$RELEASE_BODY" \
-              UPLOAD_FILES="$UPLOAD_FILES" \
-              BRANCH="${BRANCH:-main}" \
-              RUNNER_TEMP="$RUNNER_TEMP" \
-              .github/workflows/scripts/release-gitlab.sh && \
-              echo "0" > /tmp/gitlab.status || echo "1" > /tmp/gitlab.status
-            ) &
+            (export USERNAME="$GITLAB_USERNAME"; .github/workflows/scripts/release-gitlab.sh) &
             PIDS[gitlab]=$!
           }
           
-          # 等待所有平台完成
+          # 等待并检查结果
           for platform in "${!PIDS[@]}"; do
             wait ${PIDS[$platform]}
-            status=$(cat /tmp/${platform}.status 2>/dev/null || echo "1")
-            RESULTS[$platform]=$status
-            echo "$platform: $([ "$status" = "0" ] && echo '✅' || echo '❌')"
+            RESULTS[$platform]=$?
+            echo "$platform: $([ "${RESULTS[$platform]}" = "0" ] && echo '✅' || echo '❌')"
           done
-
+          
           for status in "${RESULTS[@]}"; do
             [ "$status" = "0" ] && exit 0
           done
