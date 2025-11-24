@@ -8,7 +8,7 @@ UPDATE_PATH="/usr/bin/auto-update.sh"
 LOG_FILE="/tmp/auto-setup-$$.log"
 
 # 批量初始化变量
-for var in CRON_TIME INSTALL_PRIORITY GITEE_TOKEN GITCODE_TOKEN SYS_ARCH ARCH_FALLBACK PKG_TYPE PKG_EXT PKG_INSTALL PKG_UPDATE PKG_LIST_INSTALLED PKG_LIST PKG_INFO INSTALLED_PACKAGES PENDING_PACKAGES FAILED_PACKAGES THIRD_PARTY_INSTALLED UNINSTALLED_PACKAGES REMAINING_PACKAGES; do
+for var in CRON_TIME INSTALL_PRIORITY SYS_ARCH ARCH_FALLBACK PKG_TYPE PKG_EXT PKG_INSTALL PKG_UPDATE PKG_LIST_INSTALLED PKG_LIST PKG_INFO INSTALLED_PACKAGES PENDING_PACKAGES FAILED_PACKAGES THIRD_PARTY_INSTALLED UNINSTALLED_PACKAGES REMAINING_PACKAGES; do
     eval "$var=''"
 done
 
@@ -28,8 +28,6 @@ read_fetch_config() {
     
     CRON_TIME=$(sed -n 's/^CRON_TIME="\([^"]*\)".*/\1/p' "$script" | head -1)
     INSTALL_PRIORITY=$(sed -n 's/^INSTALL_PRIORITY=\([^#]*\).*/\1/p' "$script" | head -1 | tr -d ' "')
-    GITEE_TOKEN=$(sed -n 's/^GITEE_TOKEN="\([^"]*\)".*/\1/p' "$script" | head -1)
-    GITCODE_TOKEN=$(sed -n 's/^GITCODE_TOKEN="\([^"]*\)".*/\1/p' "$script" | head -1)
     
     local pkg=$(sed -n 's/^PACKAGES="\([^"]*\)".*/\1/p' "$script" | head -1)
     PACKAGES=$([ -n "$pkg" ] && echo "$pkg" || echo "$DEFAULT_PACKAGES")
@@ -52,8 +50,6 @@ generate_config() {
 
 CRON_TIME="${CRON_TIME}"
 INSTALL_PRIORITY="${INSTALL_PRIORITY:-1}"
-GITEE_TOKEN="${GITEE_TOKEN}"
-GITCODE_TOKEN="${GITCODE_TOKEN}"
 SCRIPT_URLS="${SCRIPT_URLS}"
 EOF
     
@@ -251,7 +247,7 @@ download_auto_update() {
     mkdir -p /usr/bin/
     
     for url in $SCRIPT_URLS; do
-        local update_url=$(echo "$url" | sed 's/auto-setup$/auto-update.sh/')
+        local update_url=$(echo "$url" | sed 's/auto-setup.*/auto-update.sh/')
         
         curl -fsSL -o "$UPDATE_PATH" "$update_url" 2>/dev/null || {
             log "  ✗ 下载失败: $update_url"
