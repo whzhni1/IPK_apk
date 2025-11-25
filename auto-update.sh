@@ -38,8 +38,8 @@ load_config() {
 parse_git_info() {
     local input="$1"
     
-    url="${input%%~*}"
-    token="${input#*~}"
+    url="${input%%≈*}"
+    token="${input#*≈}"
     [ "$token" = "$input" ] && token=""
     local norm="${url/raw.gitcode/gitcode}"
     norm="${norm/raw.githubusercontent.com/github.com}"
