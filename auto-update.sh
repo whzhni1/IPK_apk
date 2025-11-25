@@ -28,9 +28,8 @@ load_config() {
     [ ! -f "$CONFIG_FILE" ] && { log "✗ 配置文件不存在"; return 1; }
     . "$CONFIG_FILE"
 
-    for key in SYS_ARCH PKG_INSTALL PKG_UPDATE PKG_LIST_INSTALLED SCRIPT_URLS; do
-        eval "[ -z \"\$$key\" ]" && { log "✗ 缺少配置: $key"; return 1; }
-    done
+    [ -z "$SYS_ARCH" ] || [ -z "$PKG_INSTALL" ] || [ -z "$PKG_UPDATE" ] || \
+    [ -z "$PKG_LIST_INSTALLED" ] || [ -z "$SCRIPT_URLS" ] && { log "✗ 缺少必需配置"; return 1; }
     
     log "√ 配置已加载"
 }
@@ -80,7 +79,7 @@ validate_file() {
 
 # API 调用
 api_get_release() {
-    local platform="$1" owner="$2" repo="$3" url header
+    local platform="$1" owner="$2" repo="$3" url header result
     
     case "$platform" in
         gitlab)
@@ -91,13 +90,13 @@ api_get_release() {
             url="https://api.github.com/repos/${owner}/${repo}/releases"
             header="Authorization: token $token"
             ;;
-        *) # gitee gitcode
+        *)
             url="https://${platform}.com/api/v5/repos/${owner}/${repo}/releases"
             header="Authorization: Bearer $token"
             ;;
     esac
     
-    [ -n "$token" ] && curl -s -H "$header" "$url" || curl -s "$url"
+    ([ -n "$token" ] && curl -s -H "$header" "$url" || curl -s "$url") | sed 's/": /":/g'
 }
 
 # 查找并安装
