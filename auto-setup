@@ -130,7 +130,7 @@ save_all_config() {
     cat > "$conf" <<EOF
 # 用户配置
 CRON_TIME="${CRON_TIME}"
-INSTALL_PRIORITY="${INSTALL_PRIORITY:-1}"
+INSTALL_PRIORITY="${INSTALL_PRIORITY}"
 AUTHORS="${AUTHORS}"
 SCRIPT_URLS="${SCRIPT_URLS}"
 
@@ -306,13 +306,7 @@ run_install() {
     filter_uninstalled "$DEFAULT_PACKAGES"
     [ -z "$UNINSTALLED_PACKAGES" ] && { log "所有包已安装"; return; }
     log "需要安装的包: $UNINSTALLED_PACKAGES"
-    if [ "${INSTALL_PRIORITY:-1}" = "1" ]; then
-        log "策略: 官方源优先"
-        install_official "$UNINSTALLED_PACKAGES"
-        [ -n "$PENDING_PACKAGES" ] && {
-            download_auto_update && call_third_party "$PENDING_PACKAGES"
-        }
-    else
+    if [ "${INSTALL_PRIORITY}" = "1" ]; then
         log "策略: 第三方源优先"
         if download_auto_update; then
             call_third_party "$UNINSTALLED_PACKAGES"
@@ -322,6 +316,12 @@ run_install() {
             log "第三方源不可用，改用官方源"
             install_official "$UNINSTALLED_PACKAGES"
         fi
+    else
+        log "策略: 官方源优先"
+        install_official "$UNINSTALLED_PACKAGES"
+        [ -n "$PENDING_PACKAGES" ] && {
+            download_auto_update && call_third_party "$PENDING_PACKAGES"
+        }
     fi
     FAILED_PACKAGES="$PENDING_PACKAGES"
 }
