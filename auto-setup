@@ -24,28 +24,14 @@ read_fetch_config() {
     local script="/etc/init.d/auto-setup-fetch"
     [ ! -f "$script" ] && { log "⚠ 引导脚本不存在"; return 1; }
     
-    eval "$(grep -E '^(CRON_TIME|INSTALL_PRIORITY|PACKAGES|AUTHORS)=' "$script" | sed 's/#.*//')"
+    eval "$(grep -E '^(CRON_TIME|INSTALL_PRIORITY|PACKAGES|AUTHORS)=' "$script" 2>/dev/null | sed 's/#.*//')"
     
-    SCRIPT_URLS=$(awk '/^SCRIPT_URLS="/{f=1;next} /^"/{f=0} f && /^http/' "$script")
-    
-    [ -z "$PACKAGES" ] && PACKAGES="$DEFAULT_PACKAGES"
-    
-    log "✓ 配置: CRON=${CRON_TIME:-未设置} AUTHORS=${AUTHORS:-自动} URLs=$(echo "$SCRIPT_URLS" | wc -l)个"
-}
+    SCRIPT_URLS=$(source "$script" >/dev/null 2>&1; echo "$SCRIPT_URLS")
 
-# 生成配置文件
-generate_config() {
-    local conf="/etc/auto-setup.conf"
-    log "生成配置: $conf"
+    [ -z "$PACKAGES" ] && PACKAGES="$DEFAULT_PACKAGES"
+    [ -z "$INSTALL_PRIORITY" ] && INSTALL_PRIORITY="1"
     
-    cat > "$conf" <<EOF
-CRON_TIME="${CRON_TIME}"
-INSTALL_PRIORITY="${INSTALL_PRIORITY:-1}"
-AUTHORS="${AUTHORS}"
-SCRIPT_URLS="${SCRIPT_URLS}"
-EOF
-    
-    [ -f "$conf" ] && log "√ 配置已生成" || { log "✗ 配置生成失败"; return 1; }
+    log "✓ 配置: CRON=${CRON_TIME:-未设置} INSTALL_PRIORITY=${INSTALL_PRIORITY} AUTHORS=${AUTHORS:-自动} URL=$(echo "$SCRIPT_URLS" | wc -w)个"
 }
 
 # 检测包管理器
@@ -138,9 +124,17 @@ init_arch() {
     log "架构列表: $ARCH_FALLBACK"
 }
 
-# 保存系统信息
-save_system_info() {
-    cat >> "/etc/auto-setup.conf" <<EOF
+# 保存配置
+save_all_config() {
+    local conf="/etc/auto-setup.conf"
+    log "保存配置: $conf"
+    
+    cat > "$conf" <<EOF
+# 用户配置
+CRON_TIME="${CRON_TIME}"
+INSTALL_PRIORITY="${INSTALL_PRIORITY:-1}"
+AUTHORS="${AUTHORS}"
+SCRIPT_URLS="${SCRIPT_URLS}"
 
 # 系统信息（自动检测）
 SYS_ARCH="$SYS_ARCH"
@@ -156,7 +150,7 @@ PKG_LIST="$PKG_LIST"
 PKG_INFO="$PKG_INFO"
 EOF
     
-    log "√ 系统信息已保存"
+    [ -f "$conf" ] && log "√ 配置已保存" || { log "✗ 配置保存失败"; return 1; }
 }
 
 # 检查已安装
@@ -384,13 +378,10 @@ remove_self() {
 run_setup() {
     log "开始自动配置 (PID: $$)"
     log "日志: $LOG_FILE"
-    
     read_fetch_config
-    
-    generate_config || return 1
     detect_package_manager || return 1
     init_arch
-    save_system_info
+    save_all_config || return 1
     
     $PKG_UPDATE >>"$LOG_FILE" 2>&1 && log "√ 软件源已更新" || log "⚠ 软件源更新失败"
     
