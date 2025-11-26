@@ -291,40 +291,25 @@ filter_uninstalled() {
     [ -n "$UNINSTALLED_PACKAGES" ] && log "需要安装: $(echo $UNINSTALLED_PACKAGES | wc -w) 个"
 }
 
-# 过滤第三方失败的包
-filter_third_party_failed() {
-    REMAINING_PACKAGES=""
-    
-    for pkg in $list; do
-        echo " $THIRD_PARTY_INSTALLED " | grep -q " $pkg " || REMAINING_PACKAGES="$REMAINING_PACKAGES $pkg"
-    done
-    
-    REMAINING_PACKAGES=$(echo "$REMAINING_PACKAGES" | xargs)
-}
-
 # 执行安装流程
 run_install() {
-    filter_uninstalled "$DEFAULT_PACKAGES"
+    filter_uninstalled "$PACKAGES"
     [ -z "$UNINSTALLED_PACKAGES" ] && { log "所有包已安装"; return; }
-    log "需要安装的包: $UNINSTALLED_PACKAGES"
-    if [ "${INSTALL_PRIORITY}" = "1" ]; then
-        log "策略: 第三方源优先"
-        if download_auto_update; then
-            call_third_party "$UNINSTALLED_PACKAGES"
-            filter_third_party_failed "$UNINSTALLED_PACKAGES"
-            [ -n "$REMAINING_PACKAGES" ] && install_official "$REMAINING_PACKAGES"
-        else
-            log "第三方源不可用，改用官方源"
-            install_official "$UNINSTALLED_PACKAGES"
-        fi
-    else
-        log "策略: 官方源优先"
-        install_official "$UNINSTALLED_PACKAGES"
-        [ -n "$PENDING_PACKAGES" ] && {
-            download_auto_update && call_third_party "$PENDING_PACKAGES"
-        }
-    fi
-    FAILED_PACKAGES="$PENDING_PACKAGES"
+    
+    local need="$UNINSTALLED_PACKAGES"
+    log "需要安装: $need (策略: $([ "$INSTALL_PRIORITY" = "1" ] && echo 第三方优先 || echo 官方优先))"
+    
+    [ "$INSTALL_PRIORITY" = "1" ] && {
+        download_auto_update && call_third_party "$need"
+        filter_uninstalled "$need"
+        [ -n "$UNINSTALLED_PACKAGES" ] && install_official "$UNINSTALLED_PACKAGES"
+    } || {
+        install_official "$need"
+        [ -n "$PENDING_PACKAGES" ] && download_auto_update && call_third_party "$PENDING_PACKAGES"
+    }
+    
+    filter_uninstalled "$need"
+    FAILED_PACKAGES="$UNINSTALLED_PACKAGES"
 }
 
 # 验证 CRON 格式
