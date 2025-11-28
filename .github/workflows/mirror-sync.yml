@@ -5,92 +5,53 @@ on:
   push:
     branches:
       - main
-    paths:
-      - 'auto-update.sh'
-      - 'auto-setup'
 
 env:
   GITEE_USERNAME: whzhni
   GITCODE_USERNAME: whzhni
   GITLAB_USERNAME: whzhni
-  REPO: ipk_apk
-  BRANCH: main
 
 jobs:
-  # ========================================
-  # 阶段1: 同步到 Gitee
-  # ========================================
-  sync-to-gitee:
+  sync:
     runs-on: ubuntu-latest
     steps:
-      - name: 检出本仓库
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
-      - name: 推送文件到 Gitee
+      - name: 同步文件
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-        run: |
-          mkdir sync-dir
-          cp auto-update.sh auto-setup sync-dir/
-
-          cd sync-dir
-          git init -b ${{ env.BRANCH }}
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git remote add gitee https://oauth2:${GITEE_TOKEN}@gitee.com/${{ env.GITEE_USERNAME }}/${{ env.REPO }}.git
-          git add .
-          git commit -m "同步 auto-update.sh 和 auto-setup 文件"
-          git push gitee ${{ env.BRANCH }} --force
-
-  # ========================================
-  # 阶段2: 同步到 GitCode
-  # ========================================
-  sync-to-gitcode:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 检出本仓库
-        uses: actions/checkout@v4
-
-      - name: 推送文件到 GitCode
-        env:
           GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
-        run: |
-          mkdir sync-dir
-          cp auto-update.sh auto-setup sync-dir/
-
-          cd sync-dir
-          git init -b ${{ env.BRANCH }}
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git remote add gitcode https://oauth2:${GITCODE_TOKEN}@gitcode.com/${{ env.GITCODE_USERNAME }}/${{ env.REPO }}.git
-          git add .
-          git commit -m "同步 auto-update.sh 和 auto-setup 文件"
-          git push gitcode ${{ env.BRANCH }} --force
-
-  # ========================================
-  # 阶段3: 同步到 GitLab
-  # ========================================
-  sync-to-gitlab:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 检出本仓库
-        uses: actions/checkout@v4
-
-      - name: 推送文件到 GitLab
-        env:
           GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
         run: |
-          mkdir sync-dir
-          cp auto-update.sh auto-setup sync-dir/
-
-          cd sync-dir
-          git init -b ${{ env.BRANCH }}
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git remote add gitlab https://oauth2:${GITLAB_TOKEN}@gitlab.com/${{ env.GITLAB_USERNAME }}/${{ env.REPO }}.git
-          git add .
-          git commit -m "同步 auto-update.sh 和 auto-setup 文件"
-          git push gitlab ${{ env.BRANCH }} --force
+          REPO="${{ github.event.repository.name }}"
+          
+          # 获取变化的根目录文件（排除隐藏文件和子目录）
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            FILES=$(find . -maxdepth 1 -type f ! -name '.*' -printf '%f ')
+          else
+            FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -vE '(/|^\.)' || true)
+          fi
+          
+          [ -z "$FILES" ] && echo "无文件需要同步" && exit 0
+          echo "仓库: $REPO | 文件: $FILES"
+          
+          sync_to() {
+            echo ">>> 同步到 $1"
+            rm -rf _sync
+            git clone --depth 1 -b main "$2" _sync 2>/dev/null || {
+              mkdir _sync && cd _sync && git init -b main && git remote add origin "$2" && cd ..
+            }
+            for f in $FILES; do [ -f "$f" ] && cp "$f" _sync/; done
+            cd _sync
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add .
+            git diff --staged --quiet || { git commit -m "同步: $FILES"; git push origin main -f; }
+            cd ..
+          }
+          
+          sync_to "Gitee"   "https://oauth2:${GITEE_TOKEN}@gitee.com/${{ env.GITEE_USERNAME }}/${REPO}.git"
+          sync_to "GitCode" "https://oauth2:${GITCODE_TOKEN}@gitcode.com/${{ env.GITCODE_USERNAME }}/${REPO}.git"
+          sync_to "GitLab"  "https://oauth2:${GITLAB_TOKEN}@gitlab.com/${{ env.GITLAB_USERNAME }}/${REPO}.git"
