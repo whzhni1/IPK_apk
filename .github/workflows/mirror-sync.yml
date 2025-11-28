@@ -27,14 +27,20 @@ jobs:
         run: |
           REPO="${{ github.event.repository.name }}"
           
-          # 获取变化的根目录文件（排除隐藏文件和子目录）
+          # 永远不同步的（目录或文件）
+          NEVER_SYNC='^\.github/'
+          # 不触发但会跟随同步的文件
+          NO_TRIGGER='^(version\.txt|README\.md)$'
+
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            FILES=$(find . -maxdepth 1 -type f ! -name '.*' ! -name 'README.md' ! -name 'LICENSE' -printf '%f ')
+            FILES=$(find . -maxdepth 1 -type f ! -name '.*' -printf '%f ')
           else
-            EXCLUDE='^(README\.md|version\.txt|\.github/.*)$'
-            FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -vE "(/|^\.|${EXCLUDE})" || true)
+            ALL=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || true)
+            SYNC_FILES=$(echo "$ALL" | grep -vE "(${NEVER_SYNC}|/|^\.)" || true)
+            TRIGGER=$(echo "$SYNC_FILES" | grep -vE "$NO_TRIGGER" || true)
+            [ -z "$TRIGGER" ] && echo "无需同步" && exit 0
+            FILES="$SYNC_FILES"
           fi
-          
           [ -z "$FILES" ] && echo "无文件需要同步" && exit 0
           echo "仓库: $REPO | 文件: $FILES"
           
