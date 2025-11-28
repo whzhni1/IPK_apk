@@ -44,18 +44,9 @@
 |SCRIPT_URLS	| 必需 |URL	|脚本下载源	|支持 GitHub、GitLab、Gitee、GitCode 等，支持带访问令牌， https://xxx≈访问令牌|
  
   ---
-### 1. 基础使用
-在 OpenWrt 构建页面的「自定义固件」-「首次启动脚本」中添加：
+### 使用实例.:
+在 OpenWrt 构建页面的「自定义固件」-「首次启动脚本」中添加以下代码：
 
-```bash
-#!/bin/sh
-# 自动插件部署脚本
-fetch_url="https://raw.githubusercontent.com/yourname/OpenWrt-AutoDeploy/main/install.sh"
-curl -fsSL --max-time 30 "$fetch_url" | sh
- ```
-
-### 2. 高级配置
-创建引导配置文件 /etc/init.d/auto-setup-fetch：
 ```bash
 #!/bin/sh
 at > /etc/init.d/auto-setup-fetch <<'EOF'
@@ -130,7 +121,7 @@ echo "[$(date '+%F %T')] ✓ 已启动"
 |luci-app-passwall2	|代理工具	|每日|
 |tailscale	|组网工具	|每日|
 |lucky	|内网穿透|	每日|
-
+|openlist2	|网盘挂载|	每日|
 ---
 
 致谢 🙏
