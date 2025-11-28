@@ -15,9 +15,9 @@
 
 #### 3.1 注册平台并创建令牌
 注册以下平台并创建访问令牌：
-- [gitee](gitee.com)
-- [gitcode](gitcode.com) 
-- [gitlab](gitlab.com)
+- [gitee.com](gitee.com)
+- [gitcode.com](gitcode.com) 
+- [gitlab.com](gitlab.com)
 
 在创建令牌时，请勾选所有权限，然后复制令牌备用。
 
