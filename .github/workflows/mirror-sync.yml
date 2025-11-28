@@ -10,7 +10,7 @@ env:
   GITEE_USERNAME: whzhni
   GITCODE_USERNAME: whzhni
   GITLAB_USERNAME: whzhni
-
+  
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -29,9 +29,10 @@ jobs:
           
           # 获取变化的根目录文件（排除隐藏文件和子目录）
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            FILES=$(find . -maxdepth 1 -type f ! -name '.*' -printf '%f ')
+            FILES=$(find . -maxdepth 1 -type f ! -name '.*' ! -name 'README.md' ! -name 'LICENSE' -printf '%f ')
           else
-            FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -vE '(/|^\.)' || true)
+            EXCLUDE='^(README\.md|version\.txt|\.github/.*)$'
+            FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -vE "(/|^\.|${EXCLUDE})" || true)
           fi
           
           [ -z "$FILES" ] && echo "无文件需要同步" && exit 0
