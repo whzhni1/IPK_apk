@@ -13,7 +13,12 @@ on:
           - 'gitee'
           - 'gitlab'
         default: 'all'
-      
+
+      Project_Name:
+        description: '项目名称'
+        required: true
+        default: 'test-release'
+        
       tag_name:
         description: 'Release 标签名'
         required: true
@@ -32,9 +37,9 @@ on:
 
 env:
   # 平台配置
-  GITCODE_REPO: test-release
-  GITEE_REPO: test-release
-  GITLAB_REPO: test-release
+  GITCODE_REPO: ${{ github.event.inputs.Project_Name }}
+  GITEE_REPO: ${{ github.event.inputs.Project_Name }}
+  GITLAB_REPO: ${{ github.event.inputs.Project_Name }}
   
   GITCODE_USERNAME: whzhni
   GITEE_USERNAME: whzhni
