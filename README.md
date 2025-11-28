@@ -1,15 +1,12 @@
 # OpenWrt AutoDeploy 🚀
 
-[![GitHub release](https://img.shields.io/github/v/release/yourname/OpenWrt-AutoDeploy)](https://github.com/yourname/OpenWrt-AutoDeploy)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+## > 智能的 OpenWrt 插件自动部署与更新解决方案
 
-> 智能的 OpenWrt 插件自动部署与更新解决方案
+## 这个项目是做什么的？
 
-## 为什么需要这个项目？
+## 🎯 刷固件后插件自动安装自动更新
 
-### 🎯 解决固件构建的痛点
-
-传统固件构建方式存在四个主要问题：
+## 传统固件构建方式存在四个主要问题：
 
 1. **空间浪费**：构建时集成插件升级插件会占用 ROM 和 overlay 的双倍存储空间
 2. **更新困难**：固件内置插件更新不想占用双倍空间需要重新刷写整个系统
@@ -55,13 +52,13 @@ wget -q -O - "https://gitlab.com/whzhni/OpenWrt-AutoDeploy/-/raw/main/auto-setup
 |AUTHORS| 可选	|AUTHORS="自定义作者"	|设置插件作者项目	|从指定作者的项目仓库下载插件|
 |EXCLUDE_PACKAGES| 可选	|EXCLUDE_PACKAGES="abc def"|	设置排除更新列表|多个包名用空格分隔，不参与自动更新|
 |SCRIPT_URLS	| 必需 |SCRIPT_URLS="URL1"|脚本下载源	|支持 GitHub、GitLab、Gitee、GitCode 等，支持带访问令牌， https://xxx≈访问令牌|
- 
-  ---
+---
 ### 使用实例.:
 在 OpenWrt 构建页面的「自定义固件」→「首次启动脚本」中添加[auto-setup-fetch](https://raw.githubusercontent.com/whzhni1/OpenWrt-AutoDeploy/refs/heads/main/auto-setup-fetch)中的代码如图所示：
 ![教程](https://github.com/whzhni1/OpenWrt-AutoDeploy/blob/8128ded337fec1fa49ddb504206b73212eb12a73/images/%E6%95%99%E7%A8%8B.png)
-插件仓库 🗃️
-项目自动维护以下插件的多平台分发：
+
+## 插件仓库 🗃️
+## 项目自动维护以下插件的多平台分发：
 
 |插件 名称	| 描述	| 更新频率|
 |---------------|------------|--------|
@@ -72,8 +69,10 @@ wget -q -O - "https://gitlab.com/whzhni/OpenWrt-AutoDeploy/-/raw/main/auto-setup
 |lucky	|内网穿透|	每日|
 |openlist2	|网盘挂载|	每日|
 ---
+## 由于每个人使用的插件不一样建议Fork本项目自己维护，[查看教程](https://github.com/whzhni1/OpenWrt-AutoDeploy/blob/656edce10fd6aa0d5694811f6cc63bd399a70447/images/Fork_README.md)
 
-致谢 🙏
+## 致谢 🙏
+
 感谢所有插件的开发者
 
 感谢 OpenWrt 社区
