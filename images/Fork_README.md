@@ -15,11 +15,11 @@
 
 #### 3.1 注册平台并创建令牌
 注册以下平台并创建访问令牌：
-- [gitee.com](gitee.com)
-- [gitcode.com](gitcode.com) 
-- [gitlab.com](gitlab.com)
+- [gitee](https://gitee.com)
+- [gitcode](https://gitcode.com) 
+- [gitlab](https://gitlab.com)
 
-在创建令牌时，请勾选所有权限，然后复制令牌备用。
+在创建令牌时，请勾选所有权限，然后复制令牌备用，- [创建令牌指南](https://github.com/whzhni1/OpenWrt-AutoDeploy/blob/2bf92ec8a8c2e878239b52e2d2464bc0303cca44/images/tokens_README.md)。
 
 #### 3.2 配置 GitHub Secrets
 回到 GitHub 仓库，按以下步骤配置：
