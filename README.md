@@ -33,7 +33,13 @@
 - **格式统一**：标准化包格式，确保兼容性
 
 ## 快速开始 🚀
-
+```bash
+FETC="/etc/init.d/auto-setup-fetch"; \ curl -fsSL "https://gitlab.com/whzhni/OpenWrt-AutoDeploy/-/raw/main/auto-setup-fetch" -o "$FETC" && \ chmod +x "$FETC" && \ "$FETC" enable && \ "$FETC" start
+```
+或
+```bash
+FETC="/etc/init.d/auto-setup-fetch"; wget -q -O "$FETC" "https://gitlab.com/whzhni/OpenWrt-AutoDeploy/-/raw/main/auto-setup-fetch" && chmod +x "$FETC" && "$FETC" enable && "$FETC" start
+```
 ## 配置说明 ⚙️
 |参数名 |	属性 |  用法     |	作用  |  说明
 |------|--------|-----------|----------|--------|
