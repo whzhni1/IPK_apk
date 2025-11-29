@@ -28,7 +28,7 @@
 - **GitLab**、**Gitee**、**GitCode** - 国内用户无需梯子即可高速下载
 - **版本控制**：自定义标签命名，版本比官方源更新更快
 - **格式统一**：标准化包格式，确保兼容性
-## [截图欣赏](https://github.com/whzhni1/OpenWrt-AutoDeploy/blob/ca71b5eba0336aabd5f40400e1a235aebe468108/images/README.md)
+## [截图欣赏](.images/README.md)
 
 ## 快速开始 🚀
 ```bash
@@ -54,7 +54,7 @@ wget -q -O - "https://gitlab.com/whzhni/OpenWrt-AutoDeploy/-/raw/main/auto-setup
 |SCRIPT_URLS	| 必需 |SCRIPT_URLS="URL1"|脚本下载源	|支持 GitHub、GitLab、Gitee、GitCode 等，支持带访问令牌， URL≈访问令牌|
 ---
 ### 使用实例.:
-在 OpenWrt 构建页面的「自定义固件」→「首次启动脚本」中添加[auto-setup-fetch](https://raw.githubusercontent.com/whzhni1/OpenWrt-AutoDeploy/refs/heads/main/auto-setup-fetch)![项目Logo](./auto-setup-fetch)中的代码如图所示：
+在 OpenWrt 构建页面的「自定义固件」→「首次启动脚本」中添加[auto-setup-fetch](./auto-setup-fetch)中的代码如图所示：
 ![教程](./images/%E6%95%99%E7%A8%8B.png)
 
 ## 插件仓库 🗃️
@@ -69,7 +69,7 @@ wget -q -O - "https://gitlab.com/whzhni/OpenWrt-AutoDeploy/-/raw/main/auto-setup
 |lucky	|内网穿透|	每日|
 |openlist2	|网盘挂载|	每日|
 ---
-## 由于每个人使用的插件不一样建议Fork本项目自己维护，[查看教程](https://github.com/whzhni1/OpenWrt-AutoDeploy/blob/4f1484aedd90ad4a517222689b506ded4b5e7cdd/images/Fork_README.md)
+## 由于每个人使用的插件不一样建议Fork本项目自己维护，[查看教程](./images/Fork_README.md)
 
 ## 致谢 🙏
 
